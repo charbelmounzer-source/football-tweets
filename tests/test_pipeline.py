@@ -226,5 +226,5 @@ def test_non_json_answer_is_described(monkeypatch):
         __enter__ = lambda self: self
         __exit__ = lambda self, *a: None
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: Resp(b"<html>\nJust a moment...</html>"))
-    with pytest.raises(UnderstatError, match=r"not JSON - HTTP 200, text/html, 29 bytes, starts with: <html> Just a moment"):
+    with pytest.raises(UnderstatError, match=r"not JSON - HTTP 200, text/html, 30 bytes, starts with: <html> Just a moment"):
         Client(delay=0, retries=2, sleep=lambda s: None).league("EPL", 2026)
