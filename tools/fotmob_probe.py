@@ -151,10 +151,10 @@ def describe_league(data):
 
 def describe_match(data):
     """What the tables need: shots with xG and position, players with minutes and xG."""
-    shots, players, team_xg = [], 0, False
-    for d in walk(data):
-        if "expectedGoals" in d and ("x" in d or "min" in d) and "playerName" in d:
-            shots.append(d)
+    players, team_xg = 0, False
+    content = data.get("content") or (data.get("props", {}).get("pageProps", {}).get("content")) or {}
+    shots = [s for s in ((content.get("shotmap") or {}).get("shots") or []) if "expectedGoals" in s]
+    for d in walk(data):                      # the same shots are repeated elsewhere: do not count those
         if isinstance(d.get("playerStats"), dict):
             players = max(players, len(d["playerStats"]))
         if d.get("key") == "expected_goals" and "stats" in d:
