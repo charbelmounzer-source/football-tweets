@@ -1,0 +1,45 @@
+name: FotMob probe
+
+# Manual test: can GitHub's servers read FotMob, and is shot / player data in the answer?
+# At most 6 requests. Run it from the Actions tab (FotMob probe -> Run workflow).
+
+on:
+  push:                            # also runs when the probe itself changes on its branch
+    branches: [fotmob-probe]
+    paths: ["tools/fotmob_probe.py", ".github/workflows/fotmob-probe.yml"]
+  workflow_dispatch:
+    inputs:
+      match:
+        description: "FotMob match id (empty = latest finished Premier League match)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Probe
+        env:
+          MATCH: ${{ inputs.match }}
+        run: |
+          set -o pipefail
+          python tools/fotmob_probe.py ${MATCH:+--match "$MATCH"} | tee probe.txt
+      - name: Result in the run summary
+        if: always()
+        run: |
+          { echo '```'; cat probe.txt 2>/dev/null || echo "The probe did not start."; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fotmob-probe
+          path: |
+            probe.txt
+            probe_out/
+          if-no-files-found: ignore

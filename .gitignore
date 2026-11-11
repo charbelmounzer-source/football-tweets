@@ -15,3 +15,6 @@ venv/
 football_local.db
 drafts.md
 .pytest_cache/
+# FotMob probe answers
+probe_out/
+probe.txt
