@@ -214,3 +214,17 @@ def test_understat_down_stops_early_and_says_why(wh):
     assert any("ERROR league Premier League 2026/27" in x and "HTTP 503" in x for x in lines)
     assert "stopped: Understat is not answering" in s["errors"][-1]
     assert "HTTP 503" in wh.read("core.runs")[0]["errors"]
+
+
+def test_non_json_answer_is_described(monkeypatch):
+    import io
+    import urllib.request
+    from football.understat import Client, UnderstatError
+
+    class Resp(io.BytesIO):
+        status, headers = 200, {"Content-Type": "text/html"}
+        __enter__ = lambda self: self
+        __exit__ = lambda self, *a: None
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: Resp(b"<html>\nJust a moment...</html>"))
+    with pytest.raises(UnderstatError, match=r"not JSON - HTTP 200, text/html, 30 bytes, starts with: <html> Just a moment"):
+        Client(delay=0, retries=2, sleep=lambda s: None).league("EPL", 2026)
