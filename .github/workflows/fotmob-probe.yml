@@ -6,7 +6,7 @@ name: FotMob probe
 on:
   push:                            # also runs when the probe itself changes on its branch
     branches: [fotmob-probe]
-    paths: ["tools/fotmob_probe.py", ".github/workflows/fotmob-probe.yml"]
+    paths: ["tools/**", ".github/workflows/fotmob-probe.yml"]
   workflow_dispatch:
     inputs:
       args:
@@ -30,11 +30,11 @@ jobs:
           ARGS: ${{ github.event_name == 'push' && '--history' || inputs.args }}
         run: |
           set -o pipefail
-          python tools/fotmob_probe.py $ARGS | tee probe.txt
+          python tools/dev_dump.py | tee probe.txt
       - name: Result in the run summary
         if: always()
         run: |
-          { echo '```'; grep -B100 -m1 "FIELDS ===" probe.txt 2>/dev/null || cat probe.txt 2>/dev/null || echo "The probe did not start."; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '```'; grep -v "^B64" probe.txt 2>/dev/null || echo "The probe did not start."; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
