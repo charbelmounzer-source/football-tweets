@@ -87,7 +87,7 @@ def walk(node):
             stack.extend(cur)
 
 
-def outline(node, path="", lines=None, limit=3000):
+def outline(node, path="", lines=None, limit=4000):
     """Every field of a payload as 'path: type = example'. Lists show one merged element;
     dicts keyed by ids show one entry; short sets of text values are listed in full."""
     lines = [] if lines is None else lines
@@ -96,8 +96,8 @@ def outline(node, path="", lines=None, limit=3000):
     if isinstance(node, dict):
         keys = list(node)
         if len(keys) > 3 and all(str(k).lstrip("-").isdigit() for k in keys):
-            lines.append(f"{path}{{id}}  x{len(keys)}")
-            outline(node[keys[0]], path + "{id}", lines, limit)
+            lines.append(f"{path}{{id}}  x{len(keys)}, shown as a list:")
+            outline(list(node.values()), path + "{id}", lines, limit)
         else:
             for k in keys:
                 outline(node[k], f"{path}.{k}" if path else str(k), lines, limit)
@@ -108,13 +108,15 @@ def outline(node, path="", lines=None, limit=3000):
             merged, seen = {}, {}
             for e in dicts:
                 for k, v in e.items():
-                    if merged.get(k) in (None, [], {}, ""):
+                    if isinstance(v, list) and isinstance(merged.get(k), list):
+                        merged[k] = merged[k] + v          # nested lists: keep every element
+                    elif merged.get(k) in (None, [], {}, ""):
                         merged[k] = v
                     if isinstance(v, (str, bool)) and k not in ("id",):
                         seen.setdefault(k, set()).add(v)
             outline(merged, path + "[]", lines, limit)
             for k, vals in seen.items():
-                if len(dicts) >= 5 and 1 < len(vals) <= 12:
+                if len(dicts) >= 5 and 1 < len(vals) <= 60:
                     lines.append(f"{path}[].{k}  values: " + " | ".join(sorted(map(str, vals))))
         else:
             lines.append(f"{path}[]  x{len(node)}  e.g. {json.dumps(node[:3], ensure_ascii=False)[:90]}")
