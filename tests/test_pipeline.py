@@ -228,3 +228,9 @@ def test_non_json_answer_is_described(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: Resp(b"<html>\nJust a moment...</html>"))
     with pytest.raises(UnderstatError, match=r"not JSON - HTTP 200, text/html, 30 bytes, starts with: <html> Just a moment"):
         Client(delay=0, retries=2, sleep=lambda s: None).league("EPL", 2026)
+
+
+def test_import_local_says_when_the_folder_is_wrong(tmp_path, wh):
+    with pytest.raises(SystemExit, match="No league files in"):
+        pipeline.import_local(wh, str(tmp_path / "nowhere"), log=quiet)
+    assert wh.read("core.runs") == []
