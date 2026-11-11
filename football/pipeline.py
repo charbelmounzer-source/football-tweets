@@ -110,8 +110,12 @@ def update(wh, client, today=None, now=None, leagues=None, backfill_from=None,
         have = {(r["league_code"], r["season"]) for r in wh.read("raw.league", ["league_code", "season"])}
         todo_seasons = [season] + [y for y in range(season - 1, config.FIRST_SEASON - 1, -1)
                                    if any((c, y) not in have for c in codes)]
+        down = 0                                             # failed league requests in a row
         for y in todo_seasons:
+            if down >= MAX_FAILURES_IN_A_ROW:
+                break
             items = []
+            n_err = len(s["errors"])
             for code in codes:
                 if y != season and (code, y) in have:
                     continue
@@ -120,7 +124,13 @@ def update(wh, client, today=None, now=None, leagues=None, backfill_from=None,
                     payload = client.league(code, y)
                 except UnderstatError as e:
                     s["errors"].append(f"league {name}: {e}")
+                    down += 1
+                    if down >= MAX_FAILURES_IN_A_ROW:
+                        s["errors"].append("stopped: Understat is not answering (too many failed "
+                                           "requests in a row)")
+                        break
                     continue
+                down = 0
                 if payload is None:
                     log(f"  {name}: not on Understat (skipped)")
                     continue
@@ -129,7 +139,6 @@ def update(wh, client, today=None, now=None, leagues=None, backfill_from=None,
                     s["errors"].append(f"league {name}: {problem}")
                     continue
                 items.append((code, payload, None))
-            n_err = len(s["errors"])
             for code, rows in load_leagues(wh, y, items, now, s["errors"]).items():
                 s["leagues_loaded"] += 1
                 log(f"  {config.LEAGUES[code]} {config.season_label(y)}: {len(rows['matches'])} played, "
@@ -167,6 +176,7 @@ def update(wh, client, today=None, now=None, leagues=None, backfill_from=None,
             except UnderstatError as e:
                 failures += 1
                 s["errors"].append(f"match {mid}: {e}")
+                log(f"  ERROR match {mid}: {e}")
                 if failures >= MAX_FAILURES_IN_A_ROW:
                     s["errors"].append("stopped: too many failed requests in a row")
                     break

@@ -203,3 +203,14 @@ def test_cli_daily_end_to_end(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit, match="data-quality error"):
         cli.main(["daily", *common, "--date", "2026-10-19"])
     assert not w.read("tweets.drafts", None, {"run_date": "2026-10-19"})
+
+
+def test_understat_down_stops_early_and_says_why(wh):
+    client = FakeUnderstat(NOW)
+    client.fail_leagues.update((c, y) for c in config.LEAGUES for y in range(2023, 2027))
+    lines = []
+    s = pipeline.update(wh, client, now=NOW, log=lines.append)
+    assert client.used == 5                                  # not 20: gave up after 5 in a row
+    assert any("ERROR league Premier League 2026/27" in x and "HTTP 503" in x for x in lines)
+    assert "stopped: Understat is not answering" in s["errors"][-1]
+    assert "HTTP 503" in wh.read("core.runs")[0]["errors"]
