@@ -206,6 +206,10 @@ def update(wh, client, today=None, now=None, leagues=None, backfill_from=None,
 
 def import_local(wh, raw_dir, log=print):
     """One-off: load the old local archive (data/raw_understat/) so nothing is downloaded twice."""
+    league_files = glob.glob(os.path.join(raw_dir, "league", "*.json"))
+    if not league_files:
+        raise SystemExit(f"No league files in {os.path.abspath(raw_dir)}{os.sep}league. Give the path "
+                         f"of the old raw_understat folder (it contains 'league' and 'match').")
     started, now = time.time(), utcnow()
     s = {"requests": 0, "leagues_loaded": 0, "matches_new": 0, "matches_refreshed": 0,
          "matches_backfilled": 0, "errors": []}
