@@ -3,8 +3,9 @@
     python tools/fotmob_probe.py                 # Premier League, latest finished match
     python tools/fotmob_probe.py --match 4506324 # a match you choose
     python tools/fotmob_probe.py --outline       # JSON endpoints only, and print every field
+    python tools/fotmob_probe.py --history       # one match per past season: what does it carry?
 
-At most 6 requests, 2 s apart. It tries two ways of reading a league and a match:
+At most 6 requests, 2 s apart (--history: 2 per season, about 35). It tries two ways of reading a league and a match:
   A. the JSON endpoints the website calls   (www.fotmob.com/api/data/...)
   B. the web page itself, which carries its data in a <script id="__NEXT_DATA__"> block
 Every answer is saved in probe_out/ so the real field names can be read afterwards.
@@ -19,6 +20,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 try:   # same reason as football/understat.py: certificate store on Windows / company networks
@@ -167,6 +169,51 @@ def describe_match(data):
     return lines, bool(shots), players > 0
 
 
+def history(league_id):
+    """One mid-season match per season the league lists: is there xG, shots, player stats?"""
+    r = fetch(f"{SITE}/api/data/leagues?id={league_id}", "application/json")
+    current = as_json(r["body"]) if r["status"] == 200 else None
+    if current is None:
+        print(f"league not readable: {r['error'] or r['status']}")
+        return 1
+    seasons = current.get("allAvailableSeasons") or []
+    print(f"{len(seasons)} seasons listed\n")
+    print("season     matches  match id  date        coverage  shots  with xG  team xG  players  player xG")
+    for season in seasons:
+        r = fetch(f"{SITE}/api/data/leagues?id={league_id}&season={urllib.parse.quote(season, safe='')}",
+                  "application/json")
+        data = as_json(r["body"]) if r["status"] == 200 else None
+        if data is None:
+            print(f"{season:<10} league not readable: {r['error'] or 'HTTP ' + str(r['status'])}")
+            continue
+        got = (data.get("details") or {}).get("selectedSeason")
+        if got != season:
+            print(f"{season:<10} the answer is for season {got!r}: the season parameter was ignored")
+            continue
+        matches = finished_matches(data)
+        if not matches:
+            print(f"{season:<10} no finished match")
+            continue
+        mid, (_, when) = matches[len(matches) // 2]
+        r = fetch(f"{SITE}/api/data/matchDetails?matchId={mid}", "application/json")
+        m = as_json(r["body"]) if r["status"] == 200 else None
+        if m is None:
+            print(f"{season:<10} {len(matches):>7}  {mid:<8}  {when[:10]}  match not readable: "
+                  f"{r['error'] or 'HTTP ' + str(r['status'])}")
+            continue
+        content = m.get("content") or {}
+        shots = (content.get("shotmap") or {}).get("shots") or []
+        with_xg = sum(1 for sh in shots if sh.get("expectedGoals"))
+        team_xg = any(d.get("key") == "expected_goals" and "stats" in d for d in walk(content.get("stats")))
+        players = [pl for pl in (content.get("playerStats") or {}).values() if pl.get("stats")]
+        player_xg = sum(1 for pl in players
+                        if any(d.get("key") == "expected_goals" for d in walk(pl["stats"])))
+        print(f"{season:<10} {len(matches):>7}  {mid:<8}  {when[:10]}  "
+              f"{str((m.get('general') or {}).get('coverageLevel')):<8}  {len(shots):>5}  {with_xg:>7}  "
+              f"{'yes' if team_xg else 'no':<7}  {len(players):>7}  {player_xg:>9}")
+    return 0
+
+
 def attempt(label, url, accept, extract, describe, save_as):
     """One request, printed and saved. -> (payload or None, value returned by describe)."""
     print(f"\n[{label}] {url}")
@@ -198,9 +245,14 @@ def main():
     ap.add_argument("--match", help="FotMob match id (default: latest finished match of the league)")
     ap.add_argument("--outline", action="store_true",
                     help="JSON endpoints only (2 requests) and print every field of both answers")
+    ap.add_argument("--history", action="store_true",
+                    help="one match per season the league lists (2 requests per season)")
     args = ap.parse_args()
     print(f"FotMob probe - python {sys.version.split()[0]}, "
           f"{'GitHub Actions' if os.environ.get('GITHUB_ACTIONS') else 'local machine'}")
+
+    if args.history:
+        return history(args.league)
 
     api_l, a = attempt("league, JSON endpoint", f"{SITE}/api/data/leagues?id={args.league}",
                        "application/json", as_json, describe_league, "league_api")
