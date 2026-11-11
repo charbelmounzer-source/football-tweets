@@ -51,7 +51,15 @@ class Client:
             "Accept": "application/json",
             "Accept-Encoding": "gzip, deflate"})
         with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(decode_body(resp.read(), resp.headers.get("Content-Encoding", "")))
+            body = decode_body(resp.read(), resp.headers.get("Content-Encoding", ""))
+            try:
+                return json.loads(body)
+            except ValueError:
+                # not JSON: say what came back instead (an HTML page, a block notice, nothing...)
+                shown = body[:200].decode("utf-8", "replace").replace("\n", " ").strip() or "(empty)"
+                raise ValueError(f"not JSON - HTTP {resp.status}, "
+                                 f"{resp.headers.get('Content-Type', 'no content type')}, "
+                                 f"{len(body)} bytes, starts with: {shown}")
 
     def get_json(self, path):
         """-> parsed JSON, or None when Understat has no such page (HTTP 404)."""
