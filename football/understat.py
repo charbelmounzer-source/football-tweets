@@ -11,6 +11,12 @@ import zlib
 
 from . import config
 
+try:   # use the computer's own certificate store (fixes SSL errors on Windows / macOS / company networks)
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 BASE_URL = "https://understat.com"
 RETRY_STATUS = {429, 500, 502, 503, 504}
 
@@ -82,6 +88,9 @@ class Client:
                     break                                   # 403 etc.: retrying won't help
             except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
                 last_error = f"network error: {getattr(e, 'reason', e)}"
+                if "CERTIFICATE_VERIFY_FAILED" in last_error:
+                    last_error += " - run: pip install truststore"
+                    break                                   # retrying won't help
             except ValueError as e:                         # not JSON / unreadable compression
                 last_error = f"unreadable response: {e}"
             if attempt < self.retries - 1:
