@@ -30,11 +30,11 @@ jobs:
           MATCH: ${{ inputs.match }}
         run: |
           set -o pipefail
-          python tools/fotmob_probe.py ${MATCH:+--match "$MATCH"} | tee probe.txt
+          python tools/fotmob_probe.py --outline ${MATCH:+--match "$MATCH"} | tee probe.txt
       - name: Result in the run summary
         if: always()
         run: |
-          { echo '```'; cat probe.txt 2>/dev/null || echo "The probe did not start."; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '```'; grep -B100 -m1 "FIELDS ===" probe.txt 2>/dev/null || cat probe.txt 2>/dev/null || echo "The probe did not start."; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

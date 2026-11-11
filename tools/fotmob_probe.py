@@ -2,6 +2,7 @@
 
     python tools/fotmob_probe.py                 # Premier League, latest finished match
     python tools/fotmob_probe.py --match 4506324 # a match you choose
+    python tools/fotmob_probe.py --outline       # JSON endpoints only, and print every field
 
 At most 6 requests, 2 s apart. It tries two ways of reading a league and a match:
   A. the JSON endpoints the website calls   (www.fotmob.com/api/data/...)
@@ -86,6 +87,42 @@ def walk(node):
             stack.extend(cur)
 
 
+def outline(node, path="", lines=None, limit=3000):
+    """Every field of a payload as 'path: type = example'. Lists show one merged element;
+    dicts keyed by ids show one entry; short sets of text values are listed in full."""
+    lines = [] if lines is None else lines
+    if len(lines) >= limit:
+        return lines
+    if isinstance(node, dict):
+        keys = list(node)
+        if len(keys) > 3 and all(str(k).lstrip("-").isdigit() for k in keys):
+            lines.append(f"{path}{{id}}  x{len(keys)}")
+            outline(node[keys[0]], path + "{id}", lines, limit)
+        else:
+            for k in keys:
+                outline(node[k], f"{path}.{k}" if path else str(k), lines, limit)
+    elif isinstance(node, list):
+        dicts = [e for e in node if isinstance(e, dict)]
+        if dicts and len(dicts) == len(node):
+            lines.append(f"{path}[]  x{len(node)}")
+            merged, seen = {}, {}
+            for e in dicts:
+                for k, v in e.items():
+                    if merged.get(k) in (None, [], {}, ""):
+                        merged[k] = v
+                    if isinstance(v, (str, bool)) and k not in ("id",):
+                        seen.setdefault(k, set()).add(v)
+            outline(merged, path + "[]", lines, limit)
+            for k, vals in seen.items():
+                if len(dicts) >= 5 and 1 < len(vals) <= 12:
+                    lines.append(f"{path}[].{k}  values: " + " | ".join(sorted(map(str, vals))))
+        else:
+            lines.append(f"{path}[]  x{len(node)}  e.g. {json.dumps(node[:3], ensure_ascii=False)[:90]}")
+    else:
+        lines.append(f"{path}: {type(node).__name__} = {json.dumps(node, ensure_ascii=False)[:70]}")
+    return lines
+
+
 def finished_matches(data):
     """Match ids of finished matches found anywhere in a league payload, in page order."""
     found = {}
@@ -157,28 +194,39 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--league", type=int, default=LEAGUE_ID)
     ap.add_argument("--match", help="FotMob match id (default: latest finished match of the league)")
+    ap.add_argument("--outline", action="store_true",
+                    help="JSON endpoints only (2 requests) and print every field of both answers")
     args = ap.parse_args()
     print(f"FotMob probe - python {sys.version.split()[0]}, "
           f"{'GitHub Actions' if os.environ.get('GITHUB_ACTIONS') else 'local machine'}")
 
     api_l, a = attempt("league, JSON endpoint", f"{SITE}/api/data/leagues?id={args.league}",
                        "application/json", as_json, describe_league, "league_api")
-    page_l, b = attempt("league, web page", f"{SITE}/leagues/{args.league}",
-                        "text/html", from_page, describe_league, "league_page")
+    page_l, b = (None, None) if args.outline else attempt(
+        "league, web page", f"{SITE}/leagues/{args.league}",
+        "text/html", from_page, describe_league, "league_page")
     match_id = args.match or (a and a[0]) or (b and b[0])
 
     api_ok = page_ok = (False, False)
     if match_id:
-        _, c = attempt("match, JSON endpoint", f"{SITE}/api/data/matchDetails?matchId={match_id}",
+        api_m, c = attempt("match, JSON endpoint", f"{SITE}/api/data/matchDetails?matchId={match_id}",
                        "application/json", as_json, describe_match, "match_api")
-        _, d = attempt("match, web page", f"{SITE}/match/{match_id}",
-                       "text/html", from_page, describe_match, "match_page")
+        _, d = (None, None) if args.outline else attempt(
+            "match, web page", f"{SITE}/match/{match_id}",
+            "text/html", from_page, describe_match, "match_page")
         api_ok, page_ok = tuple(c or (False, False)), tuple(d or (False, False))
     else:
         print("\nNo match id found: pass one with --match (the number in a fotmob.com/match/... link).")
 
+    if args.outline:
+        for title, data in (("LEAGUE", api_l), ("MATCH", api_m if match_id else None)):
+            print(f"\n=== {title} FIELDS ===")
+            print("\n".join(outline(data)) if data is not None else "(no answer)")
+
     def word(ok):
         return "yes" if ok else "NO"
+    if args.outline:
+        print("\n(web pages not tested in --outline mode: ignore that column)")
     print("\n=== Result ===")
     print(f"league list   JSON endpoint: {word(api_l is not None)}   web page: {word(page_l is not None)}")
     print(f"match shots   JSON endpoint: {word(api_ok[0])}   web page: {word(page_ok[0])}")
