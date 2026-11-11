@@ -1,0 +1,130 @@
+"""Command line.
+
+  python -m football daily                  # update + checks + tweet drafts (what the scheduler runs)
+  python -m football update                 # download and load only
+  python -m football check                  # data-quality checks only
+  python -m football tweets --top 25        # draft tweets from what is in the warehouse
+  python -m football import-local data/raw_understat    # one-off: load the old local archive
+  python -m football status                 # what is loaded, last runs
+
+Options for every command:
+  --backend bigquery|sqlite   (default bigquery; sqlite = a local file, for trying things out)
+  --project my-gcp-project    (default: $BQ_PROJECT or the one in football/config.py)
+  --db path                   (sqlite file, default football_local.db)
+"""
+
+import argparse
+import sys
+from collections import Counter
+from datetime import date
+
+from . import checks, config, pipeline, tweets
+from .understat import Client
+from .warehouse import open_warehouse
+
+
+def league_codes(arg):
+    if not arg or arg == "all":
+        return list(config.LEAGUES)
+    codes = [c.strip() for c in arg.split(",") if c.strip()]
+    bad = [c for c in codes if c not in config.LEAGUES]
+    if bad:
+        sys.exit(f"Unknown league(s): {', '.join(bad)}. Use: {', '.join(config.LEAGUES)}")
+    return codes
+
+
+def cmd_update(wh, args):
+    client = Client(max_requests=args.max_requests, delay=args.delay)
+    return pipeline.update(wh, client, today=args.today, leagues=league_codes(args.leagues),
+                           backfill_from=args.backfill_from)
+
+
+def cmd_check(wh, args):
+    _, errors = checks.run_checks(wh, args.today or date.today(), pipeline.utcnow(),
+                                  leagues=league_codes(args.leagues))
+    return errors
+
+
+def cmd_tweets(wh, args):
+    names = None if args.leagues in (None, "all") else [config.LEAGUES[c] for c in league_codes(args.leagues)]
+    return tweets.draft(wh, args.today or date.today(), leagues=names, top=args.top,
+                        include_repeats=args.include_repeats, md_path=args.md)
+
+
+def cmd_daily(wh, args):
+    print("1/3 update")
+    summary = cmd_update(wh, args)
+    print("2/3 checks")
+    errors = cmd_check(wh, args)
+    if errors:
+        sys.exit(f"{errors} data-quality error(s): no tweets drafted. See core.latest_checks.")
+    print("3/3 tweet drafts")
+    cmd_tweets(wh, args)
+    if summary["errors"]:
+        sys.exit(f"Finished with {len(summary['errors'])} download error(s) (see core.runs); "
+                 f"data loaded so far is consistent and the next run retries.")
+
+
+def cmd_import(wh, args):
+    pipeline.import_local(wh, args.raw_dir)
+
+
+def cmd_status(wh, args):
+    played = Counter((m["league"], m["season"]) for m in wh.read("core.matches", ["league", "season"]))
+    detailed = Counter((m["league"], m["season"]) for m in wh.read("raw.match", ["league", "season"]))
+    fetched = {(r["league"], r["season"]): r["fetched_at"]
+               for r in wh.read("raw.league", ["league", "season", "fetched_at"])}
+    print(f"{'league':<16}{'season':<9}{'played':>7}{'details':>9}  downloaded (UTC)")
+    for (lg, s) in sorted(played):
+        print(f"{lg:<16}{config.season_label(s):<9}{played[(lg, s)]:>7}{detailed[(lg, s)]:>9}  "
+              f"{fetched.get((lg, s), '')}")
+    runs = sorted(wh.read("core.runs"), key=lambda r: r["run_at"])[-5:]
+    print("\nlast runs")
+    for r in runs:
+        print(f"  {r['run_at']}  {r['command']:<13}{r['status']:<7}{r['requests']:>5} requests, "
+              f"{r['matches_new']} new, {r['matches_refreshed']} corrected, "
+              f"{r['matches_backfilled']} backfilled, {r['seconds']} s")
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="python -m football", description="Football data pipeline.")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--backend", default="bigquery", choices=["bigquery", "sqlite"])
+    common.add_argument("--project", help="Google Cloud project id")
+    common.add_argument("--db", help="sqlite file (with --backend sqlite)")
+    common.add_argument("--leagues", help="comma-separated Understat codes (default all): "
+                                          + ", ".join(config.LEAGUES))
+    common.add_argument("--date", dest="today", type=date.fromisoformat,
+                        help="run as if today were this day (YYYY-MM-DD)")
+    dl = argparse.ArgumentParser(add_help=False)
+    dl.add_argument("--max-requests", type=int, default=config.MAX_REQUESTS)
+    dl.add_argument("--delay", type=float, default=config.REQUEST_DELAY)
+    dl.add_argument("--backfill-from", type=int, metavar="SEASON",
+                    help="also download match details of past seasons from this start year "
+                         "(most recent first, within --max-requests; resumes every run)")
+    tw = argparse.ArgumentParser(add_help=False)
+    tw.add_argument("--top", type=int, default=25, help="number of drafts (default 25)")
+    tw.add_argument("--include-repeats", action="store_true")
+    tw.add_argument("--md", help="also write the drafts to this markdown file")
+
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("daily", parents=[common, dl, tw])
+    sub.add_parser("update", parents=[common, dl])
+    sub.add_parser("check", parents=[common])
+    sub.add_parser("tweets", parents=[common, tw])
+    sub.add_parser("status", parents=[common])
+    sub.add_parser("import-local", parents=[common]).add_argument("raw_dir")
+    args = p.parse_args(argv)
+    if getattr(args, "delay", 1.5) < 1:
+        sys.exit("Please keep --delay at 1 second or more: Understat is a free site.")
+
+    wh = open_warehouse(args.backend, args.project, args.db)
+    wh.ensure()
+    result = {"daily": cmd_daily, "update": cmd_update, "check": cmd_check, "tweets": cmd_tweets,
+              "status": cmd_status, "import-local": cmd_import}[args.cmd](wh, args)
+    if args.cmd == "check" and result:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

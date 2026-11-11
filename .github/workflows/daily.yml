@@ -1,0 +1,59 @@
+name: Daily update
+
+# Downloads what changed on Understat, loads BigQuery, runs the data checks, drafts tweets.
+# Needs one repository secret: GCP_SA_KEY (JSON key of a service account with the roles
+# "BigQuery Data Editor" and "BigQuery Job User" on the project). See README, "Set up".
+
+on:
+  schedule:
+    - cron: "23 4 * * *"          # every day 04:23 UTC (05:23 Paris in winter, 06:23 in summer)
+  workflow_dispatch:
+    inputs:
+      backfill_from:
+        description: "Also download match details of past seasons from this start year (e.g. 2021). Empty = no"
+        required: false
+      max_requests:
+        description: "Request cap for this run"
+        default: "3000"
+      top:
+        description: "Number of tweet drafts"
+        default: "25"
+
+concurrency:
+  group: daily-update              # never two runs at once: Understat must not be hit in parallel
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      BQ_PROJECT: ${{ vars.BQ_PROJECT || 'football-model-494509' }}
+      BACKFILL_FROM: ${{ inputs.backfill_from || vars.BACKFILL_FROM }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - name: Update, check, draft
+        run: |
+          python -m football daily --md drafts.md \
+            --max-requests "${{ inputs.max_requests || '3000' }}" --top "${{ inputs.top || '25' }}" \
+            ${BACKFILL_FROM:+--backfill-from "$BACKFILL_FROM"}
+      - name: Drafts in the run summary
+        if: always()
+        run: test -f drafts.md && cat drafts.md >> "$GITHUB_STEP_SUMMARY" || echo "No drafts this run." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tweet-drafts
+          path: drafts.md
+          if-no-files-found: ignore
