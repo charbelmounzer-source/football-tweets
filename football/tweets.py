@@ -459,7 +459,8 @@ def gen_streaks(d, lg):
             if not notes and length < minimum + 3:
                 continue
             extra = f" - {' and '.join(notes)}" if notes else ""
-            text = (f"📊 {team} are on a {length}-match {words} run in {the(lg)}{extra}."
+            article = "an" if length in (8, 11, 18) or 80 <= length < 90 else "a"
+            text = (f"📊 {team} are on {article} {length}-match {words} run in {the(lg)}{extra}."
                     f"\n\n{pick(PUNCH[mood], team + run)}")
             facts.append(Fact(
                 "streak", lg, team, text, rarity=rarity,

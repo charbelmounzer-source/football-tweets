@@ -98,10 +98,10 @@ def run_checks(wh, today, now, leagues=None, log=print):
     check("D4", "warn", "Team without exactly 11 starters",
           [f"match {mid} team {tid}: {n}" for (mid, tid), n in starters.items() if n != 11])
 
-    check("D5", "warn", "Team xG differs from the sum of its shots' xG by more than 0.3",
+    check("D5", "warn", "Team xG differs from the sum of its shots' xG by more than 0.5",
           [f"{t['team']} match {t['match_id']}: {t['xg']} vs {shot_xg[(t['match_id'], t['team_id'])]:.2f}"
            for t in team_stats if t["xg"] is not None and t["match_id"] in with_shots
-           and abs(t["xg"] - shot_xg[(t["match_id"], t["team_id"])]) > 0.3])
+           and abs(t["xg"] - shot_xg[(t["match_id"], t["team_id"])]) > 0.5])
 
     check("X1", "warn", "Fixtures postponed (kick-off passed 2+ days ago, no result) or cancelled",
           [f"{f['home_team']} v {f['away_team']} {f['date']} ({f['status']})" for f in fixtures

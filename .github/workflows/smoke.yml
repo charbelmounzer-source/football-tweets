@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Update, check, draft
-        run: python -m football daily $ARGS --leagues EPL --max-requests 170 --md drafts.md --top 15 || echo "EXIT $?"
+        run: python -m football daily $ARGS --max-requests 560 --md drafts.md --top 25 || echo "EXIT $?"
       - name: Status
         run: python -m football status $ARGS
       - name: Drafts
@@ -38,7 +38,8 @@ jobs:
               print("##", title)
               for r in con.execute(sql): print("  ", dict(r))
           show("checks", "select check_id, status, row_count, sample from core_quality_checks")
-          show("top scorers", "select player, max(team) team, count(*) games, sum(minutes) minutes, sum(goals) goals, sum(penalty_goals) pens, sum(assists) assists, round(sum(xg),2) xg, sum(shots) shots from core_player_matches where season=2026 group by player_id order by goals desc limit 8")
+          show("matches by league", "select league, season, count(*) n from core_team_stats group by 1,2")
+          show("top scorers", "select league, player, max(team) team, count(*) games, sum(minutes) minutes, sum(goals) goals, sum(penalty_goals) pens, sum(assists) assists, round(sum(xg),2) xg, sum(shots) shots from core_player_matches where season=2026 group by league, player_id order by goals desc limit 12")
           show("own goals", "select match_id, player, team, own_goals from core_player_matches where own_goals>0 limit 8")
           show("own goal shots", "select match_id, player, team, home_away, result, xg from core_shots where own_goal=1 limit 8")
           show("reds", "select match_id, player, team, yellow, red from core_player_matches where red>0 limit 8")
@@ -47,7 +48,7 @@ jobs:
           show("raw size", "select count(*) n, round(avg(length(payload))) avg_bytes, max(length(payload)) max_bytes from raw_match")
           show("team stats nulls", "select count(*) n, sum(xg is null) no_xg, sum(shots is null) no_shots, sum(possession is null) no_poss, sum(npxg is null) no_npxg from core_team_stats")
           show("player nulls", "select season, count(*) n, sum(minutes is null) no_min, sum(started is null) no_start, sum(rating is null) no_rating, sum(touches is null) no_touches from core_player_matches group by 1")
-          show("fixtures", "select status, count(*) n from core_fixtures group by 1")
-          show("standings", "select team, position, played, points, round(xg,1) xg, round(xga,1) xga, round(xpts,1) xpts from core_standings where season=2026 order by position limit 5")
+          show("fixtures", "select league, status, count(*) n from core_fixtures group by 1,2")
+          show("standings", "select league, team, position, played, points, round(xg,1) xg, round(xga,1) xga, round(xpts,1) xpts from core_standings where season=2026 and position<=2 order by league")
           show("runs", "select * from core_runs")
           PY
