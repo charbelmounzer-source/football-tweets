@@ -1,12 +1,11 @@
 name: Real-data trial (temporary)
 
-# Development only, removed before merge: the whole flow on real FotMob data, into a local
-# SQLite file instead of BigQuery.
+# Development only, removed before merge.
 
 on:
   push:
     branches: [fotmob-probe]
-    paths: ["football/**", ".github/workflows/smoke.yml", "config/**"]
+    paths: [".github/workflows/smoke.yml"]
 
 permissions:
   contents: read
@@ -14,41 +13,30 @@ permissions:
 jobs:
   trial:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    env:
-      PYTHONUNBUFFERED: "1"
-      ARGS: "--backend sqlite --db trial.db"
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Update, check, draft
-        run: python -m football daily $ARGS --max-requests 560 --md drafts.md --top 25 || echo "EXIT $?"
-      - name: Status
-        run: python -m football status $ARGS
-      - name: Drafts
-        run: cat drafts.md || true
-      - name: Rows
+      - name: Four matches
         run: |
           python - <<'PY'
-          import sqlite3, json
-          con = sqlite3.connect("trial.db"); con.row_factory = sqlite3.Row
-          def show(title, sql):
-              print("##", title)
-              for r in con.execute(sql): print("  ", dict(r))
-          show("checks", "select check_id, status, row_count, sample from core_quality_checks")
-          show("matches by league", "select league, season, count(*) n from core_team_stats group by 1,2")
-          show("top scorers", "select league, player, max(team) team, count(*) games, sum(minutes) minutes, sum(goals) goals, sum(penalty_goals) pens, sum(assists) assists, round(sum(xg),2) xg, sum(shots) shots from core_player_matches where season=2026 group by league, player_id order by goals desc limit 12")
-          show("own goals", "select match_id, player, team, own_goals from core_player_matches where own_goals>0 limit 8")
-          show("own goal shots", "select match_id, player, team, home_away, result, xg from core_shots where own_goal=1 limit 8")
-          show("reds", "select match_id, player, team, yellow, red from core_player_matches where red>0 limit 8")
-          show("shot results", "select result, situation, count(*) n from core_shots group by 1,2 order by n desc")
-          show("matches per season with details", "select season, count(*) n, sum(problem is not null) unusable from raw_match group by 1")
-          show("raw size", "select count(*) n, round(avg(length(payload))) avg_bytes, max(length(payload)) max_bytes from raw_match")
-          show("team stats nulls", "select count(*) n, sum(xg is null) no_xg, sum(shots is null) no_shots, sum(possession is null) no_poss, sum(npxg is null) no_npxg from core_team_stats")
-          show("player nulls", "select season, count(*) n, sum(minutes is null) no_min, sum(started is null) no_start, sum(rating is null) no_rating, sum(touches is null) no_touches from core_player_matches group by 1")
-          show("fixtures", "select league, status, count(*) n from core_fixtures group by 1,2")
-          show("standings", "select league, team, position, played, points, round(xg,1) xg, round(xga,1) xga, round(xpts,1) xpts from core_standings where season=2026 and position<=2 order by league")
-          show("runs", "select * from core_runs")
+          import json
+          from football.fotmob import Client
+          from football.model import slim_match
+          c = Client(max_requests=10)
+          for mid in (5868051, 5881154, 5802965, 5868033):
+              raw = c.match(mid)
+              s = slim_match(raw)
+              print("##", mid, s["home"], s["away"], "coverage", s["coverage"])
+              for e in s["events"]:
+                  if e["type"] == "Goal": print("   event", json.dumps(e, ensure_ascii=False))
+              for x in s["shots"]:
+                  if x["eventType"] == "Goal": print("   shot ", x["teamId"], x["playerId"], x["playerName"], x["situation"], "own" if x["isOwnGoal"] else "", x["min"])
+              for p in s["players"]:
+                  g = p["stats"].get("goals")
+                  if g: print("   stat ", p["team_id"], p["id"], p["name"], "goals", g)
+              ev = [e for e in ((raw.get("content") or {}).get("matchFacts") or {}).get("events", {}).get("events", []) if e.get("type") == "Goal"]
+              print("   raw goal event keys with values:", [{k: v for k, v in e.items() if k in ("ownGoal", "goalDescription", "goalDescriptionKey", "isHome", "nameStr", "playerId", "newScore", "shotmapEvent") and k != "shotmapEvent"} for e in ev])
           PY
