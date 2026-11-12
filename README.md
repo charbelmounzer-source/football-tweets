@@ -110,7 +110,9 @@ Things to know about the data:
 - **Results are complete from the first run; xG and players arrive match by match.** A match
   has `team_stats`, `player_matches` and `shots` rows only once its details are loaded.
 - **Own goals** are in `shots` with `own_goal = 1` and the team of the player who scored it;
-  they are not counted in his `goals` or in `shot_goals`.
+  they are not counted in his `goals` or in `shot_goals`. Goals follow the shot data: now and
+  then FotMob's match page credits an attacker where the shot data records an own goal.
+- A team's xG can be lower than the sum of its shots' xG (several shots of one attack).
 - FotMob leaves a player stat out when it is zero; the pipeline stores 0 for shots, xG, xA
   and key passes when the match has shot data.
 - No PPDA, no "deep" passes, no pre-match forecast, no per-match expected points: FotMob does
@@ -128,7 +130,7 @@ Things to know about the data:
 | D2 | warn | score ≠ players' goals + own goals |
 | D3 | warn | a player's goals ≠ his goals in the shot data |
 | D4 | warn | a team without exactly 11 starters |
-| D5 | warn | a team's xG differs from the sum of its shots' xG by more than 0.5 |
+| D5 | warn | a team's xG is higher than the sum of its shots' xG by more than 0.3 (shots missing) |
 | X1 | warn | postponed or cancelled fixtures |
 
 ## Tweet drafts
