@@ -1,13 +1,14 @@
-"""Understat download client. Understat has no official API: this reads the JSON its own
-website loads. One request at a time, 1.5 s apart, with retries. Never run it in parallel.
+"""FotMob download client. FotMob has no official API: this reads the JSON its own website
+loads (www.fotmob.com/api/data/...). One request at a time, 1.5 s apart, with retries.
+Never run it in parallel, and expect the paths to change without notice.
 """
 
 import gzip
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
-import zlib
 
 from . import config
 
@@ -17,31 +18,22 @@ try:   # use the computer's own certificate store (fixes SSL errors on Windows /
 except ImportError:
     pass
 
-BASE_URL = "https://understat.com"
+BASE_URL = "https://www.fotmob.com/api/data"
 RETRY_STATUS = {429, 500, 502, 503, 504}
+HEADERS = {                     # the headers the probe of 11 Nov 2026 was answered with
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/130.0 Safari/537.36"),
+    "Accept": "application/json", "Accept-Language": "en-GB,en;q=0.9",
+    "Accept-Encoding": "gzip", "Referer": "https://www.fotmob.com/",
+}
 
 
-class UnderstatError(Exception):
+class FotMobError(Exception):
     """A request failed after every retry. The caller decides whether the run goes on."""
 
 
 class BudgetSpent(Exception):
     """The run's request cap is reached. Not an error: the next run resumes."""
-
-
-def decode_body(raw, encoding):
-    """Decompress gzip/deflate responses (some servers compress even when not asked)."""
-    encoding = (encoding or "").lower()
-    if raw[:2] == b"\x1f\x8b" or "gzip" in encoding:
-        return gzip.decompress(raw)
-    if "deflate" in encoding:
-        try:
-            return zlib.decompress(raw)
-        except zlib.error:
-            return zlib.decompress(raw, -zlib.MAX_WBITS)
-    if "br" in encoding:
-        raise ValueError("server used Brotli compression")
-    return raw
 
 
 class Client:
@@ -51,24 +43,22 @@ class Client:
         self.used, self.last = 0, 0.0
 
     def _open(self, path):
-        req = urllib.request.Request(f"{BASE_URL}/{path}", headers={
-            "X-Requested-With": "XMLHttpRequest",           # Understat's data endpoints need it
-            "User-Agent": "Mozilla/5.0 (compatible; football-db/2.0; personal use)",
-            "Accept": "application/json",
-            "Accept-Encoding": "gzip, deflate"})
+        req = urllib.request.Request(f"{BASE_URL}/{path}", headers=HEADERS)
         with urllib.request.urlopen(req, timeout=60) as resp:
-            body = decode_body(resp.read(), resp.headers.get("Content-Encoding", ""))
+            body = resp.read()
+            if body[:2] == b"\x1f\x8b":
+                body = gzip.decompress(body)
             try:
                 return json.loads(body)
             except ValueError:
-                # not JSON: say what came back instead (an HTML page, a block notice, nothing...)
+                # not JSON: say what came back instead (the website's HTML, a block notice, nothing...)
                 shown = body[:200].decode("utf-8", "replace").replace("\n", " ").strip() or "(empty)"
                 raise ValueError(f"not JSON - HTTP {resp.status}, "
                                  f"{resp.headers.get('Content-Type', 'no content type')}, "
                                  f"{len(body)} bytes, starts with: {shown}")
 
     def get_json(self, path):
-        """-> parsed JSON, or None when Understat has no such page (HTTP 404)."""
+        """-> parsed JSON, or None when FotMob has no such page (HTTP 404)."""
         if self.used >= self.max_requests:
             raise BudgetSpent()
         last_error = None
@@ -89,16 +79,19 @@ class Client:
             except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
                 last_error = f"network error: {getattr(e, 'reason', e)}"
                 if "CERTIFICATE_VERIFY_FAILED" in last_error:
-                    last_error += " - run: pip install truststore"
+                    last_error += " - run: python -m pip install truststore"
                     break                                   # retrying won't help
-            except ValueError as e:                         # not JSON / unreadable compression
+            except ValueError as e:                         # not JSON
                 last_error = f"unreadable response: {e}"
             if attempt < self.retries - 1:
                 self.sleep(min(15 * 2 ** attempt, 120))     # 15 s, 30 s, 60 s
-        raise UnderstatError(f"{path}: {last_error}")
+        raise FotMobError(f"{path}: {last_error}")
 
     def league(self, code, season):
-        return self.get_json(f"getLeagueData/{code}/{season}")
+        """One league-season: every match with its status and score, and the league table."""
+        season = urllib.parse.quote(config.fotmob_season(season), safe="")
+        return self.get_json(f"leagues?id={config.FOTMOB_IDS[code]}&season={season}")
 
     def match(self, match_id):
-        return self.get_json(f"getMatchData/{match_id}")
+        """One match: team stats, lineups, player stats, shots."""
+        return self.get_json(f"matchDetails?matchId={match_id}")

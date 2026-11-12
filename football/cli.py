@@ -4,8 +4,7 @@
   python -m football update                 # download and load only
   python -m football check                  # data-quality checks only
   python -m football tweets --top 25        # draft tweets from what is in the warehouse
-  python -m football import-local data/raw_understat    # one-off: load the old local archive
-  python -m football status                 # what is loaded, last runs
+  python -m football status                 # what is loaded, what is left, last runs
 
 Options for every command:
   --backend bigquery|sqlite   (default bigquery; sqlite = a local file, for trying things out)
@@ -19,7 +18,7 @@ from collections import Counter
 from datetime import date
 
 from . import checks, config, pipeline, tweets
-from .understat import Client
+from .fotmob import Client
 from .warehouse import open_warehouse
 
 
@@ -35,8 +34,7 @@ def league_codes(arg):
 
 def cmd_update(wh, args):
     client = Client(max_requests=args.max_requests, delay=args.delay)
-    return pipeline.update(wh, client, today=args.today, leagues=league_codes(args.leagues),
-                           backfill_from=args.backfill_from)
+    return pipeline.update(wh, client, today=args.today, leagues=league_codes(args.leagues))
 
 
 def cmd_check(wh, args):
@@ -65,25 +63,26 @@ def cmd_daily(wh, args):
                  f"data loaded so far is consistent and the next run retries.")
 
 
-def cmd_import(wh, args):
-    pipeline.import_local(wh, args.raw_dir)
-
-
 def cmd_status(wh, args):
     played = Counter((m["league"], m["season"]) for m in wh.read("core.matches", ["league", "season"]))
-    detailed = Counter((m["league"], m["season"]) for m in wh.read("raw.match", ["league", "season"]))
+    raw = wh.read("raw.match", ["league", "season", "problem"])
+    detailed = Counter((m["league"], m["season"]) for m in raw if not m["problem"])
+    unusable = Counter((m["league"], m["season"]) for m in raw if m["problem"])
     fetched = {(r["league"], r["season"]): r["fetched_at"]
                for r in wh.read("raw.league", ["league", "season", "fetched_at"])}
-    print(f"{'league':<16}{'season':<9}{'played':>7}{'details':>9}  downloaded (UTC)")
+    print(f"{'league':<16}{'season':<9}{'played':>7}{'details':>9}{'unusable':>10}  downloaded (UTC)")
     for (lg, s) in sorted(played):
-        print(f"{lg:<16}{config.season_label(s):<9}{played[(lg, s)]:>7}{detailed[(lg, s)]:>9}  "
-              f"{fetched.get((lg, s), '')}")
+        print(f"{lg:<16}{config.season_label(s):<9}{played[(lg, s)]:>7}{detailed[(lg, s)]:>9}"
+              f"{unusable[(lg, s)]:>10}  {fetched.get((lg, s), '')}")
+    left = sum(played.values()) - len(raw)
+    print(f"\nmatch details still to download: {left}"
+          + (f" (about {-(-left // config.MAX_REQUESTS)} run(s) of {config.MAX_REQUESTS} requests)" if left else ""))
     runs = sorted(wh.read("core.runs"), key=lambda r: r["run_at"])[-5:]
     print("\nlast runs")
     for r in runs:
-        print(f"  {r['run_at']}  {r['command']:<13}{r['status']:<7}{r['requests']:>5} requests, "
+        print(f"  {r['run_at']}  {r['command']:<8}{r['status']:<7}{r['requests']:>5} requests, "
               f"{r['matches_new']} new, {r['matches_refreshed']} corrected, "
-              f"{r['matches_backfilled']} backfilled, {r['seconds']} s")
+              f"{r['matches_backfilled']} of past seasons, {r['seconds']} s")
 
 
 def main(argv=None):
@@ -92,16 +91,14 @@ def main(argv=None):
     common.add_argument("--backend", default="bigquery", choices=["bigquery", "sqlite"])
     common.add_argument("--project", help="Google Cloud project id")
     common.add_argument("--db", help="sqlite file (with --backend sqlite)")
-    common.add_argument("--leagues", help="comma-separated Understat codes (default all): "
+    common.add_argument("--leagues", help="comma-separated codes (default all): "
                                           + ", ".join(config.LEAGUES))
     common.add_argument("--date", dest="today", type=date.fromisoformat,
                         help="run as if today were this day (YYYY-MM-DD)")
     dl = argparse.ArgumentParser(add_help=False)
-    dl.add_argument("--max-requests", type=int, default=config.MAX_REQUESTS)
+    dl.add_argument("--max-requests", type=int, default=config.MAX_REQUESTS,
+                    help=f"request cap for this run (default {config.MAX_REQUESTS})")
     dl.add_argument("--delay", type=float, default=config.REQUEST_DELAY)
-    dl.add_argument("--backfill-from", type=int, metavar="SEASON",
-                    help="also download match details of past seasons from this start year "
-                         "(most recent first, within --max-requests; resumes every run)")
     tw = argparse.ArgumentParser(add_help=False)
     tw.add_argument("--top", type=int, default=25, help="number of drafts (default 25)")
     tw.add_argument("--include-repeats", action="store_true")
@@ -113,15 +110,14 @@ def main(argv=None):
     sub.add_parser("check", parents=[common])
     sub.add_parser("tweets", parents=[common, tw])
     sub.add_parser("status", parents=[common])
-    sub.add_parser("import-local", parents=[common]).add_argument("raw_dir")
     args = p.parse_args(argv)
     if getattr(args, "delay", 1.5) < 1:
-        sys.exit("Please keep --delay at 1 second or more: Understat is a free site.")
+        sys.exit("Please keep --delay at 1 second or more: FotMob is a free site.")
 
     wh = open_warehouse(args.backend, args.project, args.db)
     wh.ensure()
     result = {"daily": cmd_daily, "update": cmd_update, "check": cmd_check, "tweets": cmd_tweets,
-              "status": cmd_status, "import-local": cmd_import}[args.cmd](wh, args)
+              "status": cmd_status}[args.cmd](wh, args)
     if args.cmd == "check" and result:
         sys.exit(1)
 

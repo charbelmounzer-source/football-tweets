@@ -1,7 +1,7 @@
 """Data-quality gate, run after every update on the current season.
 
 error = the data can't be trusted: the daily job stops before drafting tweets.
-warn  = look at it (some are real Understat quirks); tweets are still drafted.
+warn  = look at it (some are real quirks of the source); tweets are still drafted.
 Every result is stored in core.quality_checks (latest run: view core.latest_checks).
 """
 
@@ -17,13 +17,17 @@ def run_checks(wh, today, now, leagues=None, log=print):
     season = config.current_season(today)
     names = [config.LEAGUES[c] for c in (leagues or list(config.LEAGUES))]
     scope = {"season": season}
-    matches = [m for m in wh.read("core.matches", None, scope) if m["league"] in names]
-    fixtures = [m for m in wh.read("core.fixtures", None, scope) if m["league"] in names]
-    team_rows = [r for r in wh.read("core.team_matches", None, scope) if r["league"] in names]
-    players = wh.read("core.player_matches", ["match_id", "player_id", "player", "team_id", "goals",
-                                              "own_goals", "started"], scope)
-    shots = wh.read("core.shots", ["match_id", "player_id", "result"], scope)
+
+    def read(table, columns=None):
+        return [r for r in wh.read(table, columns, scope) if r["league"] in names]
+    matches, fixtures, team_rows = read("core.matches"), read("core.fixtures"), read("core.team_matches")
+    standings = read("core.standings")
+    team_stats = read("core.team_stats", ["match_id", "league", "team_id", "team", "xg", "shot_goals"])
+    players = read("core.player_matches", ["match_id", "league", "player_id", "player", "team_id",
+                                           "goals", "own_goals", "started"])
+    shots = read("core.shots", ["match_id", "league", "player_id", "team_id", "result", "own_goal", "xg"])
     raw = {r["league"]: r["fetched_at"] for r in wh.read("raw.league", ["league", "fetched_at"], scope)}
+    unusable = {r["match_id"] for r in wh.read("raw.match", ["match_id", "problem"], scope) if r["problem"]}
     results = []
 
     def check(cid, level, description, bad):
@@ -33,7 +37,7 @@ def run_checks(wh, today, now, leagues=None, log=print):
                         "status": level if bad else "ok",
                         "sample": "; ".join(str(b) for b in bad[:10]) or None})
 
-    # freshness. In July-August a league may simply not have started on Understat yet.
+    # freshness. In July-August a league may simply not have its new season on FotMob yet.
     limit = (now - timedelta(hours=36)).strftime(DT)
     preseason = today.month in (7, 8)
     check("F1", "warn" if preseason else "error",
@@ -48,22 +52,26 @@ def run_checks(wh, today, now, leagues=None, log=print):
     for r in team_rows:
         sides[r["match_id"]].append(r)
     check("M2", "error", "Played match without exactly 2 team rows",
-          [m["match_id"] for m in matches if len(sides.get(m["match_id"], [])) != 2]
-          + [f"team {r['team']} {r['date']} (no match)" for r in sides.get(None, [])])
+          [m["match_id"] for m in matches if len(sides.get(m["match_id"], [])) != 2])
 
-    def score_differs(m):
-        rows = {r["team_id"]: r for r in sides.get(m["match_id"], [])}
-        h, a = rows.get(m["home_team_id"]), rows.get(m["away_team_id"])
-        return bool(h and a) and (h["goals_for"], a["goals_for"]) != (m["home_goals"], m["away_goals"])
-    check("M3", "error", "Team rows disagree with the match score",
-          [m["match_id"] for m in matches if score_differs(m)])
+    # the league table is a second, independent count by FotMob: it must agree with the results
+    mine = defaultdict(lambda: [0, 0])
+    for r in team_rows:
+        mine[(r["league"], r["team_id"])][0] += 1
+        mine[(r["league"], r["team_id"])][1] += r["points"]
+    check("S1", "warn", "League table disagrees with the results (played, points)",
+          [f"{t['team']}: table {t['played']} played {t['points']} pts, results "
+           f"{mine[(t['league'], t['team_id'])][0]} played {mine[(t['league'], t['team_id'])][1]} pts"
+           for t in standings if not t["deduction"]
+           and [t["played"], t["points"]] != mine[(t["league"], t["team_id"])]])
 
     detailed = defaultdict(list)
     for p in players:
         detailed[p["match_id"]].append(p)
     old = (today - timedelta(days=2)).isoformat()
     check("D1", "warn", "Match played 2+ days ago without player details",
-          [m["match_id"] for m in matches if m["match_id"] not in detailed and (m["date"] or "") <= old])
+          [f"{m['match_id']}{' (unusable)' if m['match_id'] in unusable else ''}" for m in matches
+           if m["match_id"] not in detailed and (m["date"] or "") <= old])
 
     def goals_differ(m):
         rows = detailed.get(m["match_id"])
@@ -75,11 +83,13 @@ def run_checks(wh, today, now, leagues=None, log=print):
     check("D2", "warn", "Score differs from players' goals + own goals",
           [m["match_id"] for m in matches if goals_differ(m)])
 
-    shot_goals, with_shots = Counter(), set()
+    shot_goals, with_shots, shot_xg = Counter(), set(), Counter()
     for x in shots:
         with_shots.add(x["match_id"])
-        if x["result"] == "Goal":
-            shot_goals[(x["match_id"], x["player_id"])] += 1
+        if not x["own_goal"]:
+            shot_xg[(x["match_id"], x["team_id"])] += x["xg"] or 0
+            if x["result"] == "Goal":
+                shot_goals[(x["match_id"], x["player_id"])] += 1
     check("D3", "warn", "Player's goals differ from his goals in the shot data",
           [f"{p['player']} (match {p['match_id']})" for p in players if p["match_id"] in with_shots
            and (p["goals"] or 0) != shot_goals.get((p["match_id"], p["player_id"]), 0)])
@@ -88,9 +98,16 @@ def run_checks(wh, today, now, leagues=None, log=print):
     check("D4", "warn", "Team without exactly 11 starters",
           [f"match {mid} team {tid}: {n}" for (mid, tid), n in starters.items() if n != 11])
 
-    check("X1", "warn", "Fixtures postponed (kick-off passed 2+ days ago, no result)",
-          [f"{f['home_team']} v {f['away_team']} {f['date']}" for f in fixtures
-           if f["status"] == "postponed"])
+    # the other way round is common (7 of 1,000 team rows on real data), probably because the
+    # team figure counts several shots of one attack once
+    check("D5", "warn", "Team xG higher than the sum of its shots' xG by more than 0.3 (shots missing?)",
+          [f"{t['team']} match {t['match_id']}: {t['xg']} vs {shot_xg[(t['match_id'], t['team_id'])]:.2f}"
+           for t in team_stats if t["xg"] is not None and t["match_id"] in with_shots
+           and t["xg"] - shot_xg[(t["match_id"], t["team_id"])] > 0.3])
+
+    check("X1", "warn", "Fixtures postponed (kick-off passed 2+ days ago, no result) or cancelled",
+          [f"{f['home_team']} v {f['away_team']} {f['date']} ({f['status']})" for f in fixtures
+           if f["status"] in ("postponed", "cancelled")])
 
     wh.append("core.quality_checks", results)
     errors = [r for r in results if r["status"] == "error"]

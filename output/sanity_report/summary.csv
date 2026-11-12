@@ -1,3 +1,0 @@
-id,level,area,check,rows,status
-U7,warn,understat,Players whose goals differ from their goals in the shot data,4,warn
-U8,warn,understat,Team xG differs from the sum of its players' xG by more than 0.1,52,warn

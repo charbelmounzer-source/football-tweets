@@ -9,7 +9,8 @@ How it works
                   winless runs - compared with the team's and the league's longest
        start      points, goals, conceded, xG after N matches vs the same point of past seasons
        overtake   a scorer passes or matches his tally for a previous club
-       luck       goals vs xG, points vs expected points, finishing (npg vs npxG)
+       luck       goals vs xG, points vs expected points (FotMob's season figures),
+                  finishing (non-penalty goals vs npxG)
        preview    head-to-head runs for the next fixtures
   3. Scoring: rarity x context (last matchday / next fixture) x club popularity, minus
      facts already drafted in the last 14 days.
@@ -18,7 +19,7 @@ How it works
 
 Reads the warehouse (core.*), writes tweets.drafts. The drafts table is also the history
 that prevents repeats. History starts with the first season loaded for each league, so
-facts say "since 2014/15", never "ever".
+facts say "since 2020/21", never "ever".
 """
 
 import csv
@@ -120,18 +121,26 @@ def first_name(name):
 
 # ------------------------------------------------------------------ data
 PM_COLS = ["match_id", "league", "season", "date", "kickoff_utc", "player_id", "player", "team_id",
-           "team", "goals", "assists", "shots", "penalty_goals"]
+           "team", "minutes", "goals", "assists", "shots", "penalty_goals", "npxg"]
+SETTLE_DAYS = 2          # a match this recent may not have its details yet: not counted as missing
 
 
 class Data:
     def __init__(self, wh, leagues, today):
         self.wh, self.today = wh, today
         cutoff = today.isoformat()
-        tm = [r for r in wh.read("core.team_matches")
-              if r["match_id"] is not None and (r["date"] or "9") <= cutoff]
+        tm = [r for r in wh.read("core.team_matches") if (r["date"] or "9") <= cutoff]
         tm.sort(key=lambda r: (r["kickoff_utc"] or "", r["match_id"]))
         if not tm:
             raise SystemExit("No team match data in the warehouse. Run the update first.")
+        # results come with the league data; xG and shots only once a match's details are loaded
+        stats = {(r["match_id"], r["team_id"]): r for r in wh.read(
+            "core.team_stats", ["match_id", "team_id", "xg", "xga", "shots", "shot_goals"])}
+        for r in tm:
+            st = stats.get((r["match_id"], r["team_id"]))
+            r["detailed"] = st is not None
+            for k in ("xg", "xga", "shots", "shot_goals"):
+                r[k] = st[k] if st else None
         self.tm = tm
         self.season = max(r["season"] for r in tm)
         all_leagues = sorted({r["league"] for r in tm})
@@ -142,15 +151,25 @@ class Data:
         self.first_season = {}                       # league -> first season in the data
         self.team_seq = defaultdict(list)            # (league, team_id) -> rows, oldest first
         self.team_all = defaultdict(list)            # team_id -> rows in every league
+        settled = (today - timedelta(days=SETTLE_DAYS)).isoformat()
+        missing = defaultdict(int)                   # (league, season) -> matches without details
         for r in tm:
             self.first_season[r["league"]] = min(self.first_season.get(r["league"], 9999), r["season"])
             self.team_seq[(r["league"], r["team_id"])].append(r)
             self.team_all[r["team_id"]].append(r)
+            if not r["detailed"] and (r["date"] or "") <= settled:
+                missing[(r["league"], r["season"])] += 1
+        # player facts need every match: a league-season is complete when none lacks its details
+        self.complete = {lg: missing.get((lg, self.season), 0) == 0 for lg in all_leagues}
+        self.history_missing = sum(missing.values()) // 2        # two team rows per match
+        self.history_complete = self.history_missing == 0
 
+        self.standings = {(r["league"], r["team_id"]): r
+                          for r in wh.read("core.standings", None, {"season": self.season})}
         self.pm = [p for p in wh.read("core.player_matches", PM_COLS, {"season": self.season})
                    if (p["date"] or "9") <= cutoff]
         self.pm.sort(key=lambda p: (p["kickoff_utc"] or "", p["match_id"]))
-        self.ps = wh.read("core.player_seasons", None, {"season": self.season})
+        self.ps = self.player_seasons()
         self.fixtures = sorted(wh.read("core.fixtures", None, {"status": "upcoming"}),
                                key=lambda f: f["kickoff_utc"] or "")
 
@@ -178,8 +197,26 @@ class Data:
                         self.clubs[r["club"].strip()] = {
                             "hashtag": (r.get("hashtag") or "").strip(),
                             "popularity": float(r.get("popularity") or 1)}
-        self._history = None
-        self.unreliable = 0                          # scorers whose history didn't add up
+        self._history = {}
+        self.unreliable = 0                          # scorers left out: history not complete
+
+    def player_seasons(self):
+        """Season totals per player and league, added up from his match rows - only for
+        leagues whose current season is complete (otherwise the totals would be too low)."""
+        out = {}
+        for p in self.pm:
+            if not self.complete.get(p["league"]):
+                continue
+            s = out.setdefault((p["league"], p["player_id"]), {
+                "player_id": p["player_id"], "league": p["league"], "games": 0, "minutes": 0,
+                "goals": 0, "penalty_goals": 0, "assists": 0, "shots": 0, "npxg": 0.0})
+            s["player"], s["team"], s["team_id"] = p["player"], p["team"], p["team_id"]   # latest
+            s["games"] += 1
+            for k in ("minutes", "goals", "penalty_goals", "assists", "shots", "npxg"):
+                s[k] += p[k] or 0
+        for s in out.values():
+            s["non_penalty_goals"] = s["goals"] - s["penalty_goals"]
+        return list(out.values())
 
     def since(self, lg):
         return season_label(self.first_season[lg])
@@ -202,52 +239,30 @@ class Data:
         return 1.0
 
     def load_history(self, player_ids):
-        """Every season and every loaded match of these players (for the overtake facts)."""
+        """Every loaded match of these players, in every season (for the overtake facts)."""
         ids = sorted(set(player_ids))
-        seasons, matches = defaultdict(list), defaultdict(list)
-        if ids:
-            for s in self.wh.read("core.player_seasons", None, {"player_id": ids}):
-                seasons[s["player_id"]].append(s)
+        self._history = defaultdict(list)
+        if ids and self.history_complete:
             for p in self.wh.read("core.player_matches", PM_COLS, {"player_id": ids}):
                 if (p["date"] or "9") <= self.today.isoformat():
-                    matches[(p["player_id"], p["league"], p["season"])].append(p)
-        self._history = (seasons, matches)
+                    self._history[p["player_id"]].append(p)
 
     def club_tallies(self, pid):
         """{club: goals, assists, pens, games, first_season, league} over the loaded history,
-        or None when a season can't be split between clubs reliably.
-
-        A season at one club uses Understat's season totals. The current season and seasons
-        with a mid-season move need match-level rows; they are only trusted when they add up
-        to the season totals (otherwise some match details are missing)."""
-        seasons, matches = self._history
+        or None while some match of the loaded seasons still lacks its details: a tally with
+        holes in it would be wrong, so none is given."""
+        if not self.history_complete:
+            return None
         clubs = {}
-
-        def add(team, league, season, goals, assists, pens, games):
-            c = clubs.setdefault(team, {"goals": 0, "assists": 0, "pens": 0, "games": 0,
-                                        "first_season": season, "league": league})
-            c["goals"] += goals
-            c["assists"] += assists
-            c["pens"] += pens
-            c["games"] += games
-            if season < c["first_season"]:
-                c["first_season"], c["league"] = season, league
-
-        for s in seasons.get(pid, []):
-            if s["season"] > self.season:
-                continue
-            split = s["teams"] and "," in s["teams"]
-            if s["season"] < self.season and not split:
-                add(s["teams"], s["league"], s["season"], s["goals"] or 0, s["assists"] or 0,
-                    s["penalty_goals"] or 0, s["games"] or 0)
-                continue
-            rows = matches.get((pid, s["league"], s["season"]), [])
-            if (sum(r["goals"] or 0 for r in rows) != (s["goals"] or 0)
-                    or len(rows) != (s["games"] or 0)):
-                return None
-            for r in rows:
-                add(r["team"], s["league"], s["season"], r["goals"] or 0, r["assists"] or 0,
-                    r["penalty_goals"] or 0, 1)
+        for r in self._history.get(pid, []):
+            c = clubs.setdefault(r["team"], {"goals": 0, "assists": 0, "pens": 0, "games": 0,
+                                             "first_season": r["season"], "league": r["league"]})
+            c["goals"] += r["goals"] or 0
+            c["assists"] += r["assists"] or 0
+            c["pens"] += r["penalty_goals"] or 0
+            c["games"] += 1
+            if r["season"] < c["first_season"]:
+                c["first_season"], c["league"] = r["season"], r["league"]
         return clubs
 
 
@@ -278,8 +293,10 @@ CONTRAST_PAIRS = [("shots", "conversion", "bad", "good"), ("xg", "goals", "unluc
 
 
 def team_season_stats(d, lg):
-    stats = defaultdict(lambda: defaultdict(float))
-    names = {}
+    """Current-season totals per team. Goals and points are added up from the results; xG,
+    xG against and expected points are FotMob's own season figures (league table), used only
+    when the table counts the same number of matches; shots need every match's details."""
+    stats, names, rows_of = defaultdict(lambda: defaultdict(float)), {}, defaultdict(list)
     for (league, tid), rows in d.team_seq.items():
         if league != lg:
             continue
@@ -288,24 +305,23 @@ def team_season_stats(d, lg):
                 continue
             s = stats[tid]
             names[tid] = r["team"]
+            rows_of[tid].append(r)
             s["games"] += 1
-            s["goals"] += r["goals_for"] or 0
-            s["conceded"] += r["goals_against"] or 0
-            s["xg"] += r["xg"] or 0
-            s["xga"] += r["xga"] or 0
-            s["points"] += r["points"] or 0
-            s["xpts"] += r["xpts"] or 0
-    shots, player_goals, detailed = defaultdict(float), defaultdict(float), defaultdict(set)
-    for p in d.pm:
-        if p["league"] == lg:
-            shots[p["team_id"]] += p["shots"] or 0
-            player_goals[p["team_id"]] += p["goals"] or 0
-            detailed[p["team_id"]].add(p["match_id"])
+            s["goals"] += r["goals_for"]
+            s["conceded"] += r["goals_against"]
+            s["points"] += r["points"]
     for tid, s in stats.items():
-        # shots only when every match of the team has its details: no half-season shot counts
-        if shots.get(tid) and len(detailed[tid]) == s["games"]:
-            s["shots"] = shots[tid]
-            s["conversion"] = 100 * player_goals[tid] / shots[tid]
+        table = d.standings.get((lg, tid))
+        if table and table["played"] == s["games"] and not table["deduction"]:
+            for key in ("xg", "xga", "xpts"):
+                if table[key] is not None:
+                    s[key] = table[key]
+        rows = rows_of[tid]
+        if all(r["shots"] is not None and r["shot_goals"] is not None for r in rows):
+            shots = sum(r["shots"] for r in rows)
+            if shots:
+                s["shots"] = shots
+                s["conversion"] = 100 * sum(r["shot_goals"] for r in rows) / shots
     return stats, names
 
 
@@ -443,7 +459,8 @@ def gen_streaks(d, lg):
             if not notes and length < minimum + 3:
                 continue
             extra = f" - {' and '.join(notes)}" if notes else ""
-            text = (f"📊 {team} are on a {length}-match {words} run in {the(lg)}{extra}."
+            article = "an" if length in (8, 11, 18) or 80 <= length < 90 else "a"
+            text = (f"📊 {team} are on {article} {length}-match {words} run in {the(lg)}{extra}."
                     f"\n\n{pick(PUNCH[mood], team + run)}")
             facts.append(Fact(
                 "streak", lg, team, text, rarity=rarity,
@@ -480,9 +497,13 @@ def gen_start(d, lg):
         for key, (col, hib, words, worst_mood) in START_METRICS.items():
             kind_fmt = "1" if key == "xg" else "int"
             total = lambda rs: sum((r[col] or 0) for r in rs[:n])
+            # xG exists only for matches whose details are loaded: a season with a hole is left out
+            usable = lambda rs: len(rs) >= n and all(r[col] is not None for r in rs[:n])
+            if not usable(cur):
+                continue
             now = total(cur)
             past = {s: total(rs) for (t, s), rs in by_team_season.items()
-                    if t == tid and s != d.season and len(rs) >= n}
+                    if t == tid and s != d.season and usable(rs)}
             if len(past) < 2:
                 continue
             better = (lambda a, b: a > b) if hib else (lambda a, b: a < b)
@@ -493,7 +514,9 @@ def gen_start(d, lg):
             else:
                 continue
             league_all = {(t, s): total(rs) for (t, s), rs in by_team_season.items()
-                          if s != d.season and len(rs) >= n}
+                          if s != d.season and usable(rs)}
+            if key == "xg" and not d.history_complete:
+                league_all = {}                           # no "best by any team" on a partial history
             league_record = bool(league_all) and all(better(now, v) for v in league_all.values())
             # the previous record: the best past value for a "best" start, the worst for a "worst"
             pick_ref = max if (kind == "best") == hib else min
@@ -544,7 +567,7 @@ def gen_overtake(d, lg):
         pid, team = p["player_id"], p["team"]
         clubs = d.club_tallies(pid)
         if not clubs or team not in clubs:
-            d.unreliable += 1                        # history can't be split by club reliably
+            d.unreliable += 1                        # history not complete yet
             continue
         here = clubs[team]
         before = here["goals"] - (p["goals"] or 0)
@@ -587,6 +610,8 @@ def gen_luck(d, lg):
     facts = []
     if season_under_way(stats):
         for metric, real, exp in (("goals", "goals", "xg"), ("points", "points", "xpts")):
+            if any(exp not in s for s in stats.values()):
+                continue                                  # FotMob's season figure missing for a team
             diffs = {t: s[real] - s[exp] for t, s in stats.items()}
             for tid, sign in ((max(diffs, key=diffs.get), 1), (min(diffs, key=diffs.get), -1)):
                 dv, s, team = diffs[tid], stats[tid], names[tid]
@@ -614,8 +639,7 @@ def gen_luck(d, lg):
         top = max(diffs, key=diffs.get)
         s = players[top]
         if diffs[top] >= 2.5:
-            team = (s["teams"] or "").split(",")[-1]
-            tid = next((t for t, name in names.items() if name == team), None)
+            team, tid = s["team"], s["team_id"]
             text = (f"🎯 {s['player']} has {s['non_penalty_goals']} non-penalty {lg} goals from "
                     f"{s['npxg']:.1f} npxG ({diffs[top]:+.1f}) - the best finishing in the league this "
                     f"season.\n\n{pick(PUNCH['good'], s['player'])}")
@@ -752,9 +776,13 @@ def draft(wh, today, leagues=None, top=25, include_repeats=False, md_path=None, 
     log(f"Facts found: {len(facts)} (" + ", ".join(f"{k} {v}" for k, v in sorted(by_kind.items()))
         + f"), {len(fresh)} not drafted in the last {REPEAT_DAYS} days, {len(too_long)} over "
         f"{TWEET_LIMIT} characters dropped, {len(chosen)} kept.")
-    if d.unreliable:
-        log(f"Overtake facts: {d.unreliable} recent scorers left out because their match rows "
-            f"don't add up to their season totals (missing match details).")
+    if not d.history_complete:
+        log(f"Player history facts (overtake) are off: {d.history_missing} played matches since "
+            f"{season_label(min(d.first_season.values()))} still lack their details.")
+    off = [lg for lg in d.leagues if not d.complete.get(lg)]
+    if off:
+        log(f"Player season facts (finishing) are off for {', '.join(off)}: some matches of this "
+            f"season lack their details.")
     for i, f in enumerate(chosen[:5], 1):
         log(f"\n{i}. [{f.kind} {f.score}] " + f.final.replace("\n\n", " "))
     return chosen

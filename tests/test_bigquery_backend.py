@@ -12,6 +12,7 @@ import pytest
 class Recorder:
     def __init__(self):
         self.queries, self.loads, self.created, self.deleted = [], [], [], []
+        self.existing, self.updated = {}, []        # table id -> a table already in the project
 
 
 @pytest.fixture
@@ -39,7 +40,12 @@ def bq(monkeypatch):
             rec.created.append(("dataset", ds.args[0]))
 
         def get_table(self, tid):
+            if tid in rec.existing and tid not in rec.deleted:
+                return rec.existing[tid]
             raise NotFound(tid)
+
+        def update_table(self, table, fields):
+            rec.updated.append([f.args[0] for f in table.schema])
 
         def create_table(self, t):
             rec.created.append(("table", t.args[0], t.clustering_fields))
@@ -65,6 +71,7 @@ def bq(monkeypatch):
     for name in ("SchemaField", "Dataset", "LoadJobConfig", "QueryJobConfig",
                  "ArrayQueryParameter", "ScalarQueryParameter"):
         setattr(mod, name, type(name, (Simple,), {}))
+    mod.SchemaField = type("SchemaField", (Simple,), {"name": property(lambda self: self.args[0])})
     mod.Table, mod.Client = Table, Client
     exc = types.ModuleType("google.api_core.exceptions")
     exc.NotFound = NotFound
@@ -82,7 +89,27 @@ def test_ensure_creates_datasets_tables_views(bq):
     wh.ensure()
     assert ("dataset", "proj.football_core") in rec.created
     assert ("table", "proj.football_core.shots", ["season", "match_id"]) in rec.created
-    assert sum(1 for q, _ in rec.queries if q.startswith("CREATE OR REPLACE VIEW")) == 3
+    assert sum(1 for q, _ in rec.queries if q.startswith("CREATE OR REPLACE VIEW")) == 4
+
+
+def test_ensure_restarts_empty_tables_of_the_previous_version_and_keeps_data(bq):
+    """The project already has the tables of the Understat version: empty ones with columns
+    that no longer exist are recreated; a table with rows only gets the new columns."""
+    wh, rec = bq
+
+    def table(columns, rows, kind="TABLE"):
+        fields = [types.SimpleNamespace(name=c, args=(c,)) for c in columns]
+        return types.SimpleNamespace(schema=fields, num_rows=rows, table_type=kind)
+    core = "proj.football_core"
+    rec.existing = {f"{core}.team_matches": table(["match_id", "ppda", "deep"], 0),
+                    f"{core}.player_seasons": table(["player_id"], 0),          # now a view
+                    f"{core}.runs": table(["run_at", "command", "old_column"], 12),
+                    "proj.football_raw.match": table(["match_id", "payload"], 0)}
+    wh.ensure()
+    assert f"{core}.team_matches" in rec.deleted and f"{core}.player_seasons" in rec.deleted
+    assert ("table", f"{core}.team_matches", ["season", "league", "team_id"]) in rec.created
+    assert f"{core}.runs" not in rec.deleted and "proj.football_raw.match" not in rec.deleted
+    assert sorted(len(u) for u in rec.updated) == [7, 11]      # raw.match + 5 columns, runs + 8 (old ones kept)
 
 
 def test_replace_is_one_transaction_through_a_staging_table(bq):
