@@ -173,14 +173,12 @@ def slim_match(payload):
             if s.get("key") and len(values) == 2 and values != [None, None]:
                 team_stats[s["key"]] = values
 
-    events = []
-    for e in ((c.get("matchFacts") or {}).get("events") or {}).get("events") or []:
-        if e.get("type") in ("Goal", "Card") and not e.get("isPenaltyShootoutEvent"):
-            events.append({"type": e["type"], "minute": e.get("time"), "added": e.get("overloadTime"),
-                           "home": e.get("isHome"), "player_id": e.get("playerId"),
-                           "player": e.get("nameStr"), "own_goal": bool(e.get("ownGoal")),
-                           "penalty": e.get("goalDescription") == "Penalty",
-                           "assist_id": e.get("assistPlayerId"), "card": e.get("card")})
+    # cards only. Goals are not taken from the event list: it sometimes credits a scorer where
+    # the shot data (and the player's own "goals" stat) records an own goal.
+    cards = [{"player_id": e.get("playerId"), "player": e.get("nameStr"), "card": e.get("card"),
+              "minute": e.get("time")}
+             for e in ((c.get("matchFacts") or {}).get("events") or {}).get("events") or []
+             if e.get("type") == "Card"]
 
     lineup = {}
     for side, key in (("home", "homeTeam"), ("away", "awayTeam")):
@@ -208,7 +206,7 @@ def slim_match(payload):
             "home": dict(home, score=scores.get(home["id"])),
             "away": dict(away, score=scores.get(away["id"])),
             "finished": bool(status.get("finished")), "cancelled": bool(status.get("cancelled")),
-            "team_stats": team_stats, "events": events, "lineup": lineup, "players": players,
+            "team_stats": team_stats, "cards": cards, "lineup": lineup, "players": players,
             "shots": shots}
 
 
@@ -242,8 +240,9 @@ def model_match(match, slim):
     for s in slim["shots"]:
         pid, tid, xg = s.get("playerId"), s.get("teamId"), num(s.get("expectedGoals"))
         goal, pen, own = s.get("eventType") == "Goal", s.get("situation") == "Penalty", bool(s.get("isOwnGoal"))
-        a = by_player.setdefault(pid, {"pens": 0, "pen_xg": 0.0})
+        a = by_player.setdefault(pid, {"pens": 0, "pen_xg": 0.0, "own": 0})
         a["pens"] += goal and pen and not own
+        a["own"] += goal and own
         a["pen_xg"] += (xg or 0) if pen else 0
         if tid in by_team:
             by_team[tid]["goals"] += goal and not own
@@ -276,17 +275,13 @@ def model_match(match, slim):
             shots_on_target=sot[tid], shot_goals=int(by_team[tid]["goals"]) if has_shots else None,
             big_chances=big[tid], possession=poss[tid], corners=corners[tid], touches_in_box=box[tid]))
 
-    own_goals, yellow, red = {}, {}, {}
-    for e in slim["events"]:
-        pid = e.get("player_id")
-        if e["type"] == "Goal" and e.get("own_goal"):
-            own_goals[pid] = own_goals.get(pid, 0) + 1
-        elif e["type"] == "Card":
-            card = (e.get("card") or "").lower()
-            if "red" in card:                               # 'Red' and a second yellow ('YellowRed')
-                red[pid] = 1
-            elif card == "yellow":
-                yellow[pid] = yellow.get(pid, 0) + 1
+    yellow, red = {}, {}
+    for e in slim["cards"]:
+        pid, card = e.get("player_id"), (e.get("card") or "").lower()
+        if "red" in card:                                   # 'Red' and a second yellow ('YellowRed')
+            red[pid] = 1
+        elif card == "yellow":
+            yellow[pid] = yellow.get(pid, 0) + 1
     starters = set(slim["lineup"]["home"]["starters"]) | set(slim["lineup"]["away"]["starters"])
 
     players = {}
@@ -294,7 +289,7 @@ def model_match(match, slim):
         pid, tid = p["id"], p["team_id"]
         if tid not in names:
             continue
-        a = by_player.get(pid, {"pens": 0, "pen_xg": 0.0})
+        a = by_player.get(pid, {"pens": 0, "pen_xg": 0.0, "own": 0})
         # FotMob leaves a stat out when it is zero (no shot -> no "total_shots", no xG).
         # With shot data for the match, a missing value is a real zero; without, it is unknown.
         zero, zero_f = (0, 0.0) if has_shots else (None, None)
@@ -309,7 +304,8 @@ def model_match(match, slim):
             keys, player_id=pid, player=p["name"], team_id=tid, team=names[tid],
             home_away=side_of[tid], started=int(pid in starters) if starters else None,
             minutes=stat(p, "minutes_played", int), goals=stat(p, "goals", int) or 0,
-            penalty_goals=int(a["pens"]) if has_shots else None, own_goals=own_goals.get(pid, 0),
+            penalty_goals=int(a["pens"]) if has_shots else None,
+            own_goals=int(a["own"]) if has_shots else None,
             assists=stat(p, "assists", int) or 0, shots=or_zero(stat(p, "total_shots", int)),
             shots_on_target=or_zero(stat(p, "ShotsOnTarget", int)), xg=p_xg, npxg=p_npxg,
             xgot=or_zero(stat(p, "expected_goals_on_target_variant"), zero_f),

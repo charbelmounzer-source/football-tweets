@@ -1,6 +1,7 @@
 name: Real-data trial (temporary)
 
-# Development only, removed before merge.
+# Development only, removed before merge: the whole flow on real FotMob data, into a local
+# SQLite file instead of BigQuery.
 
 on:
   push:
@@ -13,30 +14,25 @@ permissions:
 jobs:
   trial:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
+    env:
+      PYTHONUNBUFFERED: "1"
+      ARGS: "--backend sqlite --db trial.db"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Four matches
-        run: |
+      - run: python -m football daily $ARGS --leagues La_Liga,Bundesliga,Ligue_1 --max-requests 330 --md drafts.md --top 25 || echo "EXIT $?"
+      - run: python -m football update $ARGS --leagues La_Liga,Bundesliga,Ligue_1 --max-requests 12
+      - run: cat drafts.md
+      - run: |
           python - <<'PY'
-          import json
-          from football.fotmob import Client
-          from football.model import slim_match
-          c = Client(max_requests=10)
-          for mid in (5868051, 5881154, 5802965, 5868033):
-              raw = c.match(mid)
-              s = slim_match(raw)
-              print("##", mid, s["home"], s["away"], "coverage", s["coverage"])
-              for e in s["events"]:
-                  if e["type"] == "Goal": print("   event", json.dumps(e, ensure_ascii=False))
-              for x in s["shots"]:
-                  if x["eventType"] == "Goal": print("   shot ", x["teamId"], x["playerId"], x["playerName"], x["situation"], "own" if x["isOwnGoal"] else "", x["min"])
-              for p in s["players"]:
-                  g = p["stats"].get("goals")
-                  if g: print("   stat ", p["team_id"], p["id"], p["name"], "goals", g)
-              ev = [e for e in ((raw.get("content") or {}).get("matchFacts") or {}).get("events", {}).get("events", []) if e.get("type") == "Goal"]
-              print("   raw goal event keys with values:", [{k: v for k, v in e.items() if k in ("ownGoal", "goalDescription", "goalDescriptionKey", "isHome", "nameStr", "playerId", "newScore", "shotmapEvent") and k != "shotmapEvent"} for e in ev])
+          import sqlite3
+          con = sqlite3.connect("trial.db"); con.row_factory = sqlite3.Row
+          for t, sql in (("checks", "select check_id, status, row_count, sample from core_quality_checks"),
+                         ("own goals", "select match_id, player, team, goals, own_goals from core_player_matches where match_id in (5868051, 5881154, 5802965, 5868033) and (goals>0 or own_goals>0)"),
+                         ("runs", "select run_at, requests, matches_new, matches_refreshed, matches_backfilled, seconds, errors from core_runs")):
+              print("##", t)
+              for r in con.execute(sql): print("  ", dict(r))
           PY

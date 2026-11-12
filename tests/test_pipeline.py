@@ -68,10 +68,10 @@ def test_model_match_penalty_own_goal_cards_and_missing_zeros():
         {"id": 2, "eventType": "Goal", "teamId": away, "playerId": defender, "playerName": "Defender",
          "situation": "RegularPlay", "expectedGoals": None, "isOwnGoal": True, "isOnTarget": True}]
     payload["content"]["matchFacts"]["events"]["events"] += [
-        {"type": "Goal", "isHome": True, "ownGoal": True, "playerId": defender, "nameStr": "Defender"},
+        # the event list credits the own goal to an attacker: the shot data is what counts
+        {"type": "Goal", "isHome": True, "ownGoal": None, "playerId": shooter, "nameStr": "Attacker"},
         {"type": "Card", "card": "Yellow", "playerId": taker}, {"type": "Card", "card": "YellowRed", "playerId": taker},
-        {"type": "Card", "card": "Red", "playerId": defender},
-        {"type": "Goal", "playerId": shooter, "isPenaltyShootoutEvent": True, "ownGoal": True}]
+        {"type": "Card", "card": "Red", "playerId": defender}]
     slim = slim_match(payload)
     assert validate_match(slim, match) is None
     assert "poll" not in str(slim) and "h2h" not in str(slim)       # only what is used is kept
@@ -80,6 +80,8 @@ def test_model_match_penalty_own_goal_cards_and_missing_zeros():
     assert len(p) == 24 and all(r["minutes"] for r in p.values())    # unused substitutes left out
     assert (p[taker]["penalty_goals"], p[taker]["yellow"], p[taker]["red"]) == (1, 1, 1)
     assert (p[defender]["own_goals"], p[defender]["red"], p[shooter]["own_goals"]) == (1, 1, 0)
+    assert p[shooter]["goals"] == sum(x["playerId"] == shooter and x["eventType"] == "Goal"
+                                      for x in fake.match(match["match_id"])["content"]["shotmap"]["shots"])
     assert p[taker]["shots"] == 0 and p[taker]["xg"] == 0.0          # stat left out by FotMob = zero
     assert sum(r["started"] for r in p.values()) == 22
     t = {r["team_id"]: r for r in rows["team_stats"]}
