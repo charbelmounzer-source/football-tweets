@@ -130,10 +130,21 @@ VIEWS = {
                MIN(season) AS first_season, MAX(season) AS last_season
         FROM `{core}.team_matches` GROUP BY team_id""",
     "players": """
-        SELECT player_id, ANY_VALUE(player HAVING MAX season) AS name,
+        SELECT player_id, ANY_VALUE(player HAVING MAX date) AS name,
+               ANY_VALUE(team HAVING MAX date) AS latest_team,
                MIN(season) AS first_season, MAX(season) AS last_season,
-               COUNT(DISTINCT league) AS leagues
-        FROM `{core}.player_seasons` GROUP BY player_id""",
+               COUNT(*) AS games, SUM(goals) AS goals
+        FROM `{core}.player_matches` GROUP BY player_id""",
+    "player_seasons": """
+        SELECT player_id, ANY_VALUE(player HAVING MAX date) AS player, league, season,
+               ANY_VALUE(season_label) AS season_label, STRING_AGG(DISTINCT team, ', ') AS teams,
+               COUNT(*) AS games, SUM(minutes) AS minutes, SUM(goals) AS goals,
+               SUM(goals) - SUM(penalty_goals) AS non_penalty_goals,
+               SUM(penalty_goals) AS penalty_goals, SUM(assists) AS assists,
+               ROUND(SUM(xg), 2) AS xg, ROUND(SUM(npxg), 2) AS npxg, ROUND(SUM(xa), 2) AS xa,
+               SUM(shots) AS shots, SUM(key_passes) AS key_passes,
+               SUM(yellow) AS yellow, SUM(red) AS red
+        FROM `{core}.player_matches` GROUP BY player_id, league, season""",
     "latest_checks": """
         SELECT * FROM `{core}.quality_checks`
         WHERE run_at = (SELECT MAX(run_at) FROM `{core}.quality_checks`)""",
@@ -161,6 +172,13 @@ class BigQueryWarehouse(Warehouse):
     def _schema(self, table):
         return [self.bq.SchemaField(c, t, mode="NULLABLE") for c, t in TABLES[table]]
 
+    def _create(self, table):
+        t = self.bq.Table(self._tid(table), schema=self._schema(table))
+        t.description = DESCRIPTIONS.get(table)
+        if table in CLUSTERING:
+            t.clustering_fields = CLUSTERING[table]
+        self.client.create_table(t)
+
     def ensure(self):
         from google.api_core.exceptions import NotFound
         for ds in self.datasets.values():
@@ -172,19 +190,27 @@ class BigQueryWarehouse(Warehouse):
             try:
                 existing = self.client.get_table(tid)
             except NotFound:
-                t = self.bq.Table(tid, schema=self._schema(table))
-                t.description = DESCRIPTIONS.get(table)
-                if table in CLUSTERING:
-                    t.clustering_fields = CLUSTERING[table]
-                self.client.create_table(t)
+                self._create(table)
                 continue
             have = {f.name for f in existing.schema}
+            if have - set(columns(table)) and not existing.num_rows:
+                # an empty table left by an older version of the pipeline, with columns that
+                # no longer exist: start it again with the current schema
+                self.client.delete_table(tid)
+                self._create(table)
+                continue
             new = [f for f in self._schema(table) if f.name not in have]
             if new:
                 existing.schema = list(existing.schema) + new
                 self.client.update_table(existing, ["schema"])
         core = f"{self.project}.{self.datasets['core']}"
         for name, sql in VIEWS.items():
+            try:
+                old = self.client.get_table(f"{core}.{name}")
+                if getattr(old, "table_type", "VIEW") == "TABLE" and not old.num_rows:
+                    self.client.delete_table(f"{core}.{name}")   # empty table of an older version
+            except NotFound:
+                pass
             try:
                 self.client.query(f"CREATE OR REPLACE VIEW `{core}.{name}` AS {sql.format(core=core)}").result()
             except Exception as e:                           # a view is a convenience, never block a run

@@ -4,58 +4,114 @@ from datetime import datetime, timedelta
 import pytest
 
 from football import checks, config, pipeline
-from football.model import model_league
+from football.model import model_league, model_match, slim_league, slim_match, validate_match
 from football.warehouse import SQLiteWarehouse
 from conftest import NOW
-from fake_understat import FakeUnderstat
+from fake_fotmob import FakeFotMob
 
 quiet = lambda *_: None
-N_LEAGUES, PER_ROUND, ROUNDS_PLAYED = 5, 5, 10
+N_LEAGUES, PER_ROUND, ROUNDS_PLAYED, SEASON_MATCHES = 5, 5, 10, 90
+CURRENT = N_LEAGUES * PER_ROUND * ROUNDS_PLAYED                  # played matches of 2026/27
+HISTORY = N_LEAGUES * 3 * SEASON_MATCHES                         # 2023/24 to 2025/26
+FIRST_EPL = 2026 * 1000                                          # id of the first EPL match of 2026/27
 
 
 def counts(wh):
     return {t: len(wh.read(t)) for t in ("raw.league", "raw.match", "core.matches", "core.fixtures",
-                                         "core.team_matches", "core.player_seasons",
+                                         "core.team_matches", "core.standings", "core.team_stats",
                                          "core.player_matches", "core.shots")}
 
 
-def test_model_league_links_team_rows_and_statuses():
-    payload = FakeUnderstat(NOW).league("EPL", 2026)
-    rows = model_league("Premier League", 2026, payload, NOW)
+def test_model_league_results_statuses_and_table():
+    slim = slim_league(FakeFotMob(NOW).league("EPL", 2026))
+    rows = model_league("Premier League", 2026, slim, NOW)
     assert len(rows["matches"]) == PER_ROUND * ROUNDS_PLAYED
-    assert len(rows["matches"]) + len(rows["fixtures"]) == 90
+    assert len(rows["matches"]) + len(rows["fixtures"]) == SEASON_MATCHES
     assert len(rows["team_matches"]) == 2 * len(rows["matches"])
-    assert all(r["match_id"] is not None and r["opponent"] for r in rows["team_matches"])
     assert {f["status"] for f in rows["fixtures"]} == {"upcoming"}
     m = rows["matches"][0]
     sides = [r for r in rows["team_matches"] if r["match_id"] == m["match_id"]]
     home = next(r for r in sides if r["home_away"] == "home")
     assert (home["goals_for"], home["goals_against"]) == (m["home_goals"], m["away_goals"])
-    assert home["team_id"] == m["home_team_id"] and home["ppda"] == 10.0
+    assert home["team_id"] == m["home_team_id"] and home["opponent_id"] == m["away_team_id"]
+    assert home["points"] == {"H": 3, "D": 1, "A": 0}[m["result"]]
+    # the league table is FotMob's own count: it agrees with the results
+    for t in rows["standings"]:
+        mine = [r for r in rows["team_matches"] if r["team_id"] == t["team_id"]]
+        assert (t["played"], t["points"]) == (len(mine), sum(r["points"] for r in mine))
+        assert t["goals_for"] == sum(r["goals_for"] for r in mine) and t["xpts"] is not None
     # a match that kicked off 5 hours ago without a result is not "postponed"
-    later = model_league("Premier League", 2026, payload, datetime(2026, 10, 24, 20, 0))
+    later = model_league("Premier League", 2026, slim, datetime(2026, 10, 24, 20, 0))
     assert Counter(f["status"] for f in later["fixtures"])["awaiting_result"] == PER_ROUND
 
 
-def test_first_run_loads_history_and_current_details(loaded):
+def test_abandoned_match_is_not_a_result():
+    payload = FakeFotMob(NOW).league("EPL", 2026)
+    st = payload["fixtures"]["allMatches"][0]["status"]           # as FotMob marks an abandoned match
+    st.update(cancelled=True, reason={"longKey": "aborted"})
+    rows = model_league("Premier League", 2026, slim_league(payload), NOW)
+    assert len(rows["matches"]) == PER_ROUND * ROUNDS_PLAYED - 1
+    assert Counter(f["status"] for f in rows["fixtures"])["cancelled"] == 1
+
+
+def test_model_match_penalty_own_goal_cards_and_missing_zeros():
+    fake = FakeFotMob(NOW)
+    league = model_league("Premier League", 2026, slim_league(fake.league("EPL", 2026)), NOW)
+    match = league["matches"][0]
+    payload = fake.match(match["match_id"])
+    home, away = match["home_team_id"], match["away_team_id"]
+    shooter = payload["content"]["shotmap"]["shots"][0]["playerId"]
+    taker, defender = home * 100 + 3, away * 100 + 2
+    payload["content"]["shotmap"]["shots"] += [
+        {"id": 1, "eventType": "Goal", "teamId": home, "playerId": taker, "playerName": "Taker",
+         "situation": "Penalty", "expectedGoals": 0.79, "isOwnGoal": False, "isOnTarget": True},
+        {"id": 2, "eventType": "Goal", "teamId": away, "playerId": defender, "playerName": "Defender",
+         "situation": "RegularPlay", "expectedGoals": None, "isOwnGoal": True, "isOnTarget": True}]
+    payload["content"]["matchFacts"]["events"]["events"] += [
+        {"type": "Goal", "isHome": True, "ownGoal": True, "playerId": defender, "nameStr": "Defender"},
+        {"type": "Card", "card": "Yellow", "playerId": taker}, {"type": "Card", "card": "YellowRed", "playerId": taker},
+        {"type": "Card", "card": "Red", "playerId": defender},
+        {"type": "Goal", "playerId": shooter, "isPenaltyShootoutEvent": True, "ownGoal": True}]
+    slim = slim_match(payload)
+    assert validate_match(slim, match) is None
+    assert "poll" not in str(slim) and "h2h" not in str(slim)       # only what is used is kept
+    rows = model_match(match, slim)
+    p = {r["player_id"]: r for r in rows["player_matches"]}
+    assert len(p) == 24 and all(r["minutes"] for r in p.values())    # unused substitutes left out
+    assert (p[taker]["penalty_goals"], p[taker]["yellow"], p[taker]["red"]) == (1, 1, 1)
+    assert (p[defender]["own_goals"], p[defender]["red"], p[shooter]["own_goals"]) == (1, 1, 0)
+    assert p[taker]["shots"] == 0 and p[taker]["xg"] == 0.0          # stat left out by FotMob = zero
+    assert sum(r["started"] for r in p.values()) == 22
+    t = {r["team_id"]: r for r in rows["team_stats"]}
+    assert t[home]["xga"] == t[away]["xg"] and t[home]["possession"] == 55
+    fake_goals = sum(x["eventType"] == "Goal" for x in fake.match(match["match_id"])["content"]["shotmap"]["shots"]
+                     if x["teamId"] == home)
+    assert t[home]["shot_goals"] == fake_goals + 1 and t[away]["shot_goals"] == match["away_goals"]
+    assert {s["shot_id"]: s["own_goal"] for s in rows["shots"]}[2] == 1
+
+
+def test_first_run_loads_results_table_and_every_match(loaded):
     wh, client, s = loaded
     c = counts(wh)
-    assert c["raw.league"] == N_LEAGUES * 4                              # 2023..2026
-    assert c["core.matches"] == N_LEAGUES * (3 * 90 + PER_ROUND * ROUNDS_PLAYED)
-    assert c["raw.match"] == N_LEAGUES * PER_ROUND * ROUNDS_PLAYED       # current season only
-    assert c["core.player_matches"] == c["raw.match"] * 24
-    assert s["matches_new"] == c["raw.match"] and not s["errors"]
-    seasons = {m["season"] for m in wh.read("core.player_matches", ["season"])}
-    assert seasons == {2026}
+    assert c["raw.league"] == N_LEAGUES * 4                              # 2023/24 to 2026/27
+    assert c["core.matches"] == CURRENT + HISTORY == c["raw.match"]
+    assert c["core.team_stats"] == 2 * c["raw.match"] and c["core.player_matches"] == 24 * c["raw.match"]
+    assert c["core.standings"] == N_LEAGUES * 4 * 10
+    assert (s["matches_new"], s["matches_backfilled"], s["history_left"]) == (CURRENT, HISTORY, 0)
+    assert not s["errors"]
+    # current season first, then the history from the most recent match back
+    order = [c[1] for c in client.calls if c[0] == "match"]
+    seasons = [mid % 1_000_000 // 1000 for mid in order]
+    assert seasons == sorted(seasons, key=lambda y: (y != 2026, -y))
 
 
 def test_rerun_is_idempotent_and_cheap(loaded):
     wh, _, _ = loaded
     before = counts(wh)
-    client = FakeUnderstat(NOW)
+    client = FakeFotMob(NOW)
     s = pipeline.update(wh, client, now=NOW, log=quiet)
     assert counts(wh) == before
-    assert client.used == N_LEAGUES                 # only the 5 current league files
+    assert client.used == N_LEAGUES                 # only the 5 current league answers
     assert s["matches_new"] == 0
 
 
@@ -63,13 +119,16 @@ def test_next_day_checks_recent_matches_again_and_stores_only_changes(loaded):
     wh, _, _ = loaded
     before = counts(wh)
     tomorrow = NOW + timedelta(days=1)
-    client = FakeUnderstat(tomorrow)
-    changed = 0 * 1_000_000 + 2026 * 1000 + 9 * 10        # an EPL match of the last round
+    client = FakeFotMob(tomorrow)
+    changed = FIRST_EPL + 9 * 10                           # an EPL match of the last round
 
-    def correct(payload):                                  # Understat fixes a shot's xG
-        payload["shots"]["h"][0]["xG"] = "0.999"
+    def correct(payload):                                  # FotMob fixes a shot's xG
+        payload["content"]["shotmap"]["shots"][0]["expectedGoals"] = 0.999
+        payload["content"]["matchFacts"]["poll"] = {"votes": 99999}     # noise that is not stored
         return payload
     client.tweak[("match", changed)] = correct
+    for mid in (FIRST_EPL + 9 * 10 + 1, FIRST_EPL + 9 * 10 + 2):        # noise alone changes nothing
+        client.tweak[("match", mid)] = lambda p: dict(p, seo={"path": "moved"})
     s = pipeline.update(wh, client, now=tomorrow, log=quiet)
     recent_rounds = 2                                      # 10-day window: rounds of 10 and 17 October
     assert client.used == N_LEAGUES + N_LEAGUES * PER_ROUND * recent_rounds
@@ -82,30 +141,32 @@ def test_new_round_adds_only_new_matches(loaded):
     wh, _, _ = loaded
     before = counts(wh)
     later = datetime(2026, 10, 25, 6, 0)
-    s = pipeline.update(wh, FakeUnderstat(later), now=later, log=quiet)
+    s = pipeline.update(wh, FakeFotMob(later), now=later, log=quiet)
     after = counts(wh)
     assert s["matches_new"] == N_LEAGUES * PER_ROUND
     assert after["core.matches"] - before["core.matches"] == N_LEAGUES * PER_ROUND
     assert before["core.fixtures"] - after["core.fixtures"] == N_LEAGUES * PER_ROUND
-    assert after["core.matches"] + after["core.fixtures"] == before["core.matches"] + before["core.fixtures"]
     ids = [m["match_id"] for m in wh.read("core.matches", ["match_id"])]
     assert len(ids) == len(set(ids))
 
 
-def test_request_cap_resumes_next_run(wh):
-    first = FakeUnderstat(NOW, max_requests=60)
-    pipeline.update(wh, first, now=NOW, log=quiet)
-    assert first.used == 60 and len(wh.read("raw.match")) == 40          # 20 league files, 40 matches
-    pipeline.update(wh, FakeUnderstat(NOW), now=NOW, log=quiet)
-    assert len(wh.read("raw.match")) == N_LEAGUES * PER_ROUND * ROUNDS_PLAYED
-    assert len(wh.read("core.runs")) == 2
+def test_request_cap_resumes_next_run_current_season_first(wh):
+    first = FakeFotMob(NOW, max_requests=20 + CURRENT + 30)
+    s = pipeline.update(wh, first, now=NOW, log=quiet)
+    assert (s["matches_new"], s["matches_backfilled"], s["history_left"]) == (CURRENT, 30, HISTORY - 30)
+    got = wh.read("core.player_matches", ["season", "date"], {"season": ("<", 2026)})
+    assert {r["season"] for r in got} == {2025} and min(r["date"] for r in got) > "2025-11-01"
+    second = FakeFotMob(NOW)
+    pipeline.update(wh, second, now=NOW, log=quiet)
+    assert second.used == N_LEAGUES + HISTORY - 30                       # nothing downloaded twice
+    assert len(wh.read("raw.match")) == CURRENT + HISTORY and len(wh.read("core.runs")) == 2
 
 
 def test_one_league_down_does_not_block_the_others(wh):
-    client = FakeUnderstat(NOW)
+    client = FakeFotMob(NOW)
     client.fail_leagues.add(("La_Liga", 2026))
-    client.fail_matches.add(2026 * 1000)                   # first EPL match
-    s = pipeline.update(wh, client, now=NOW, log=quiet)
+    client.fail_matches.add(FIRST_EPL)
+    s = pipeline.update(wh, client, now=NOW, leagues=None, log=quiet)
     loaded = {r["league"] for r in wh.read("core.matches", ["league"], {"season": 2026})}
     assert loaded == set(config.LEAGUES.values()) - {"La Liga"}
     assert len(s["errors"]) == 2
@@ -113,61 +174,60 @@ def test_one_league_down_does_not_block_the_others(wh):
     _, errors = checks.run_checks(wh, NOW.date(), NOW, log=quiet)
     assert errors == 1                                     # F1: La Liga not downloaded
     # next run: everything recovers
-    pipeline.update(wh, FakeUnderstat(NOW), now=NOW, log=quiet)
-    assert len(wh.read("raw.match")) == N_LEAGUES * PER_ROUND * ROUNDS_PLAYED
+    pipeline.update(wh, FakeFotMob(NOW), now=NOW, log=quiet)
+    assert len(wh.read("raw.match")) == CURRENT + HISTORY
 
 
-def test_broken_payload_never_replaces_good_data(loaded):
+def test_bad_league_answer_never_replaces_good_data(loaded):
     wh, _, _ = loaded
     before = counts(wh)
-    client = FakeUnderstat(NOW)
-    client.tweak[("league", "EPL", 2026)] = lambda p: {"dates": [], "teams": {}, "players": []}
-    client.tweak[("league", "Serie_A", 2026)] = lambda p: dict(p, dates=p["dates"][40:])   # lost results
+    client = FakeFotMob(NOW)
+    client.tweak[("league", "EPL", 2026)] = lambda p: dict(p, fixtures={"allMatches": []})
+    lost = lambda p: dict(p, fixtures={"allMatches": p["fixtures"]["allMatches"][40:]})
+    client.tweak[("league", "Serie_A", 2026)] = lost
+    # the season parameter ignored: the answer is for another season
+    client.tweak[("league", "Ligue_1", 2026)] = lambda p: dict(p, details=dict(p["details"], selectedSeason="2025/2026"))
     s = pipeline.update(wh, client, now=NOW, log=quiet)
-    assert len(s["errors"]) == 2 and counts(wh) == before
+    assert len(s["errors"]) == 3 and counts(wh) == before
+    assert any("answer is for season '2025/2026'" in e for e in s["errors"])
 
 
-def test_backfill_past_seasons_most_recent_first(loaded):
-    wh, _, _ = loaded
-    client = FakeUnderstat(NOW, max_requests=N_LEAGUES + 30)
-    s = pipeline.update(wh, client, now=NOW, backfill_from=2024, leagues=["EPL"], log=quiet)
-    assert s["matches_backfilled"] == 30 + N_LEAGUES - 1   # one league file only for EPL
-    got = wh.read("core.player_matches", ["season", "date"], {"season": 2025})
-    assert got and min(r["date"] for r in got) > "2025-10-15"
+def test_match_without_usable_details_waits_then_is_given_up(wh):
+    recent, old = FIRST_EPL + 9 * 10, FIRST_EPL            # played yesterday / two months ago
+    empty = lambda p: dict(p, content=dict(p["content"], playerStats={}))
+    client = FakeFotMob(NOW, max_requests=20 + CURRENT)
+    client.tweak[("match", recent)] = client.tweak[("match", old)] = empty
+    lines = []
+    s = pipeline.update(wh, client, now=NOW, log=lines.append)
+    raw = {r["match_id"]: r["problem"] for r in wh.read("raw.match", ["match_id", "problem"])}
+    assert recent not in raw and s["matches_waiting"] == 1            # asked again by the next run
+    assert raw[old] == "no player stats" and any("not asked again" in x for x in lines)
+    assert not wh.read("core.player_matches", None, {"match_id": old})
+    results, _ = checks.run_checks(wh, NOW.date(), NOW, log=quiet)
+    d1 = next(r for r in results if r["check_id"] == "D1")
+    assert d1["row_count"] == 1 and "(unusable)" in d1["sample"]
+    again = FakeFotMob(NOW, max_requests=N_LEAGUES + 1)
+    pipeline.update(wh, again, now=NOW, log=quiet)
+    assert ("match", recent) in again.calls and ("match", old) not in again.calls
 
 
 def test_checks_pass_on_clean_data_and_catch_damage(loaded):
     wh, _, _ = loaded
     results, errors = checks.run_checks(wh, NOW.date(), NOW, log=quiet)
     assert errors == 0 and all(r["status"] == "ok" for r in results), results
-    mid = 2026 * 1000
-    row = wh.read("core.team_matches", None, {"match_id": mid})[0]
-    wh.replace("core.team_matches", [dict(row, goals_for=row["goals_for"] + 1)],
-               {"match_id": mid, "team_id": row["team_id"]})
-    wh.replace("core.shots", [], {"match_id": mid + 1})
-    wh.replace("core.player_matches", [], {"match_id": mid + 2})
+    row = wh.read("core.team_matches", None, {"match_id": FIRST_EPL})[0]
+    wh.replace("core.team_matches", [dict(row, points=row["points"] + 1)],
+               {"match_id": FIRST_EPL, "team_id": row["team_id"]})
+    wh.replace("core.team_matches", [], {"match_id": FIRST_EPL + 3})
+    some_team = wh.read("core.shots", ["team_id"], {"match_id": FIRST_EPL + 1})[0]["team_id"]
+    wh.replace("core.shots", [], {"match_id": FIRST_EPL + 1, "team_id": some_team})   # its shots are lost
+    wh.replace("core.player_matches", [], {"match_id": FIRST_EPL + 2})
     results, errors = checks.run_checks(wh, NOW.date(), NOW, log=quiet)
     status = {r["check_id"]: (r["status"], r["row_count"]) for r in results}
-    assert errors == 1 and status["M3"] == ("error", 1)
-    assert status["D1"] == ("warn", 1)
+    assert errors == 1 and status["M2"] == ("error", 1)
+    assert status["S1"] == ("warn", 3)                      # 1 wrong points + 2 teams of the lost match
+    assert status["D1"] == ("warn", 1) and status["D5"] == ("warn", 1)
     assert len(wh.read("core.quality_checks")) == 2 * len(results)
-
-
-def test_import_local_archive(tmp_path, wh):
-    import json
-    client = FakeUnderstat(NOW)
-    raw = tmp_path / "raw_understat"
-    (raw / "league").mkdir(parents=True)
-    (raw / "match").mkdir()
-    payload = client.league("EPL", 2026)
-    (raw / "league" / "EPL_2026.json").write_text(json.dumps(payload))
-    for m in payload["dates"][:7]:
-        (raw / "match" / f"{m['id']}.json").write_text(json.dumps(client.match(int(m["id"]))))
-    s = pipeline.import_local(wh, str(raw), log=quiet)
-    assert (s["leagues_loaded"], s["matches_new"]) == (1, 7)
-    assert len(wh.read("core.player_matches")) == 7 * 24
-    again = pipeline.import_local(wh, str(raw), log=quiet)
-    assert again["matches_new"] == 0
 
 
 def test_sqlite_where_forms(tmp_path):
@@ -187,7 +247,7 @@ def test_sqlite_where_forms(tmp_path):
 
 def test_cli_daily_end_to_end(tmp_path, monkeypatch, capsys):
     from football import cli
-    monkeypatch.setattr(cli, "Client", lambda **_: FakeUnderstat(NOW))
+    monkeypatch.setattr(cli, "Client", lambda **_: FakeFotMob(NOW))
     monkeypatch.setattr(pipeline, "utcnow", lambda: NOW)
     db, md = str(tmp_path / "cli.db"), str(tmp_path / "drafts.md")
     common = ["--backend", "sqlite", "--db", db, "--date", "2026-10-18"]
@@ -196,41 +256,42 @@ def test_cli_daily_end_to_end(tmp_path, monkeypatch, capsys):
     assert len(w.read("tweets.drafts")) == 10 and open(md, encoding="utf-8").read().count("###") == 10
     cli.main(["status", *common])
     out = capsys.readouterr().out
-    assert "Premier League  2026/27       50       50" in out and "update" in out
+    assert "Premier League  2026/27       50       50         0" in out and "update" in out
+    assert "match details still to download: 0" in out
     # a data-quality error stops the run before drafting
-    w.replace("core.team_matches", [], {"match_id": 2026 * 1000})
+    w.replace("core.team_matches", [], {"match_id": FIRST_EPL})
     monkeypatch.setattr(cli, "cmd_update", lambda wh, args: {"errors": []})
     with pytest.raises(SystemExit, match="data-quality error"):
         cli.main(["daily", *common, "--date", "2026-10-19"])
     assert not w.read("tweets.drafts", None, {"run_date": "2026-10-19"})
 
 
-def test_understat_down_stops_early_and_says_why(wh):
-    client = FakeUnderstat(NOW)
+def test_fotmob_down_stops_early_and_says_why(wh):
+    client = FakeFotMob(NOW)
     client.fail_leagues.update((c, y) for c in config.LEAGUES for y in range(2023, 2027))
     lines = []
     s = pipeline.update(wh, client, now=NOW, log=lines.append)
     assert client.used == 5                                  # not 20: gave up after 5 in a row
     assert any("ERROR league Premier League 2026/27" in x and "HTTP 503" in x for x in lines)
-    assert "stopped: Understat is not answering" in s["errors"][-1]
+    assert "stopped: FotMob is not answering" in s["errors"][-1]
     assert "HTTP 503" in wh.read("core.runs")[0]["errors"]
 
 
-def test_non_json_answer_is_described(monkeypatch):
+def test_non_json_answer_is_described_and_the_season_is_asked_for(monkeypatch):
     import io
     import urllib.request
-    from football.understat import Client, UnderstatError
+    from football.fotmob import Client, FotMobError
+    asked = []
 
     class Resp(io.BytesIO):
         status, headers = 200, {"Content-Type": "text/html"}
         __enter__ = lambda self: self
         __exit__ = lambda self, *a: None
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: Resp(b"<html>\nJust a moment...</html>"))
-    with pytest.raises(UnderstatError, match=r"not JSON - HTTP 200, text/html, 30 bytes, starts with: <html> Just a moment"):
-        Client(delay=0, retries=2, sleep=lambda s: None).league("EPL", 2026)
 
-
-def test_import_local_says_when_the_folder_is_wrong(tmp_path, wh):
-    with pytest.raises(SystemExit, match="No league files in"):
-        pipeline.import_local(wh, str(tmp_path / "nowhere"), log=quiet)
-    assert wh.read("core.runs") == []
+    def urlopen(req, timeout):
+        asked.append(req.full_url)
+        return Resp(b"<html>\nJust a moment...</html>")
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    with pytest.raises(FotMobError, match=r"not JSON - HTTP 200, text/html, 30 bytes, starts with: <html> Just a moment"):
+        Client(delay=0, retries=2, sleep=lambda s: None).league("La_Liga", 2020)
+    assert asked[0] == "https://www.fotmob.com/api/data/leagues?id=87&season=2020%2F2021"

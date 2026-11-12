@@ -1,6 +1,6 @@
 name: Daily update
 
-# Downloads what changed on Understat, loads BigQuery, runs the data checks, drafts tweets.
+# Downloads what changed on FotMob, loads BigQuery, runs the data checks, drafts tweets.
 # Needs one repository secret: GCP_SA_KEY (JSON key of a service account with the roles
 # "BigQuery Data Editor" and "BigQuery Job User" on the project). See README, "Set up".
 
@@ -9,18 +9,15 @@ on:
     - cron: "23 4 * * *"          # every day 04:23 UTC (05:23 Paris in winter, 06:23 in summer)
   workflow_dispatch:
     inputs:
-      backfill_from:
-        description: "Also download match details of past seasons from this start year (e.g. 2021). Empty = no"
-        required: false
       max_requests:
-        description: "Request cap for this run"
-        default: "3000"
+        description: "Request cap for this run (what is left of the history continues next run)"
+        default: "2000"
       top:
         description: "Number of tweet drafts"
         default: "25"
 
 concurrency:
-  group: daily-update              # never two runs at once: Understat must not be hit in parallel
+  group: daily-update              # never two runs at once: FotMob must not be hit in parallel
   cancel-in-progress: false
 
 permissions:
@@ -29,11 +26,10 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 170
     env:
       BQ_PROJECT: ${{ vars.BQ_PROJECT || 'football-model-494509' }}
       PYTHONUNBUFFERED: "1"            # show the log line by line while the job runs
-      BACKFILL_FROM: ${{ inputs.backfill_from || vars.BACKFILL_FROM }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -47,8 +43,10 @@ jobs:
       - name: Update, check, draft
         run: |
           python -m football daily --md drafts.md \
-            --max-requests "${{ inputs.max_requests || '3000' }}" --top "${{ inputs.top || '25' }}" \
-            ${BACKFILL_FROM:+--backfill-from "$BACKFILL_FROM"}
+            --max-requests "${{ inputs.max_requests || '2000' }}" --top "${{ inputs.top || '25' }}"
+      - name: What is loaded
+        if: always()
+        run: python -m football status
       - name: Drafts in the run summary
         if: always()
         run: test -f drafts.md && cat drafts.md >> "$GITHUB_STEP_SUMMARY" || echo "No drafts this run." >> "$GITHUB_STEP_SUMMARY"

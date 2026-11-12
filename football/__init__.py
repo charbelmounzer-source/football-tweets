@@ -1,1 +1,1 @@
-"""Daily football data pipeline: Understat -> BigQuery -> tweet drafts."""
+"""Daily football data pipeline: FotMob -> BigQuery -> tweet drafts."""

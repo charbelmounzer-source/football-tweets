@@ -3,17 +3,18 @@
 import os
 from datetime import date
 
-LEAGUES = {                       # Understat code -> league name used in every table
+LEAGUES = {                       # our code -> league name used in every table
     "EPL": "Premier League",
     "La_Liga": "La Liga",
     "Serie_A": "Serie A",
     "Bundesliga": "Bundesliga",
     "Ligue_1": "Ligue 1",
 }
+FOTMOB_IDS = {"EPL": 47, "La_Liga": 87, "Serie_A": 55, "Bundesliga": 54, "Ligue_1": 53}
 
-# First season loaded at league level (results, team stats, player season totals).
-# Understat starts in 2014/15. Costs one request per league-season, once.
-FIRST_SEASON = int(os.environ.get("FOOTBALL_FIRST_SEASON", "2014"))
+# First season loaded. FotMob has shots and xG from 2020/21 (checked on the Premier League);
+# before that it only has results (and player stats without xG from 2016/17).
+FIRST_SEASON = int(os.environ.get("FOOTBALL_FIRST_SEASON", "2020"))
 
 PROJECT = os.environ.get("BQ_PROJECT", "football-model-494509")
 LOCATION = os.environ.get("BQ_LOCATION", "EU")
@@ -23,10 +24,11 @@ DATASETS = {                      # logical name -> BigQuery dataset
     "tweets": os.environ.get("BQ_DATASET_TWEETS", "football_tweets"),
 }
 
-REQUEST_DELAY = 1.5          # seconds between Understat requests (keep >= 1: it is a free site)
-REFRESH_WINDOW_DAYS = 10     # played matches this recent are downloaded again (Understat corrections)
+REQUEST_DELAY = 1.5          # seconds between FotMob requests (keep >= 1: it is a free site)
+REFRESH_WINDOW_DAYS = 10     # played matches this recent are downloaded again (late corrections)
 REFRESH_AFTER_HOURS = 20     # ...unless they were downloaded more recently than this
-MAX_REQUESTS = 3000          # safety cap per run
+GIVE_UP_AFTER_DAYS = 14      # a played match still without usable details after this is not asked again
+MAX_REQUESTS = 2000          # per run. What is left of the history is continued by the next run
 
 
 def current_season(today=None):
@@ -37,3 +39,8 @@ def current_season(today=None):
 
 def season_label(season):
     return f"{season}/{str(season + 1)[2:]}" if season is not None else None
+
+
+def fotmob_season(season):
+    """2026 -> '2026/2027', the way FotMob names a season."""
+    return f"{season}/{season + 1}"
