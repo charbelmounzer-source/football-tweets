@@ -16,7 +16,7 @@ rewrites when several things change, and honest feedback over encouragement.
 
 | Piece | State |
 |---|---|
-| Pipeline (`football/`) | Rebuilt on FotMob only on 12 Nov 2026 (pull request 7). 32 tests pass on a simulated FotMob. |
+| Pipeline (`football/`) | Rebuilt on FotMob only on 12 Nov 2026 (pull request 8; pull request 7 was only a probe). 32 tests pass on a simulated FotMob. |
 | Real-data trials | Run on GitHub runners into SQLite, not BigQuery (see below). All five leagues, current season. |
 | BigQuery project `football-model-494509` | Billing enabled. Datasets `football_raw`, `football_core`, `football_tweets` exist with the **old Understat tables, empty** except `core.runs` and `core.quality_checks`. The first run replaces the empty ones (see `BigQueryWarehouse.ensure`). |
 | Service account | `football-pipeline@football-model-494509.iam.gserviceaccount.com`, roles BigQuery Data Editor + Job User. Key saved as repo secret `GCP_SA_KEY`. |
@@ -83,7 +83,7 @@ Say so plainly when it matters; do not assume these work.
 
 ## Next steps, in order
 
-1. **Merge pull request 7, then run `Daily update` by hand** (Actions tab) and read the log.
+1. **Merge pull request 8, then run `Daily update` by hand** (Actions tab) and read the log.
    Expect: 35 league answers, 500 matches of this season, ~1,465 of last season, then
    "request cap reached". About one hour. If BigQuery refuses something, that is the item
    "never verified" above: fix it first.
