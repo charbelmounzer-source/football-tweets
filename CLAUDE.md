@@ -5,8 +5,8 @@ Read this first. It is the state of the project on 13 November 2026 and what to 
 
 ## What the project is
 
-FotMob data for the top 5 European leagues, from 2020/21 → BigQuery → automatically drafted
-tweets. End goal: post the tweets on X automatically. Today it only drafts them.
+FotMob data for the top 5 European leagues, from 2010/11 (full detail from 2020/21, see
+"History back to 2010/11") → BigQuery → automatically drafted tweets. End goal: post the tweets on X automatically. Today it only drafts them.
 
 Owner's wishes: FotMob as the only source, data fresh at least once a day, no CSV/local files,
 BigQuery as the home of the data, simple code. He prefers step-by-step changes, full file
@@ -17,12 +17,13 @@ rewrites when several things change, and honest feedback over encouragement.
 | Piece | State |
 |---|---|
 | Pipeline (`football/`) | FotMob only (pull request 8, 12 Nov). Runs every day on BigQuery since 12 Nov, no error. |
-| History | **Complete** since 13 Nov: 35 league-seasons 2020/21-2026/27, ~11,800 matches, all with details but 2 that FotMob cannot give (Bologna-Udinese 2020/21, Mallorca-Girona 2023/24, "no player stats"). Every season has its full schedule (teams x (teams-1); Serie A 2022/23 has 381 with the play-off). xG on every detailed match but one (Ligue 1 2020/21). |
+| History 2020/21 → | **Complete** since 13 Nov: 35 league-seasons 2020/21-2026/27, ~11,800 matches, all with details but 2 that FotMob cannot give (Bologna-Udinese 2020/21, Mallorca-Girona 2023/24, "no player stats"). Every season has its full schedule (teams x (teams-1); Serie A 2022/23 has 381 with the play-off). xG on every detailed match but one (Ligue 1 2020/21). |
 | BigQuery project `football-model-494509` | Billing enabled, datasets `football_raw`, `football_core`, `football_tweets`. `replace()`, views and old-table replacement work on the real project. |
 | Service account | `football-pipeline@football-model-494509.iam.gserviceaccount.com`, roles BigQuery Data Editor + Job User. Key saved as repo secret `GCP_SA_KEY`. |
 | GitHub Actions `Daily update` | Daily 04:23 UTC, ~3 minutes once the history is loaded. Input **rebuild** re-makes core tables from raw (needed once after new columns). |
 | Pull request 9 (merged 13 Nov) | Coverage checks, `rebuild`, 14 new player / 4 team columns, overtake fix, 4 new tweet patterns, "since" rule. Rebuild run on BigQuery 13 Nov: 11,233 matches, 0 errors. |
 | Pull request 11 (merged 13 Nov) | History back to 2010/11 with FotMob's eras; unknown = NULL. See "History back to 2010/11". The older seasons load over the next runs (see "Loading faster"). |
+| History 2010/11 – 2019/20 | Results and tables of all 50 league-seasons loaded 13 Nov. Match pages loading from 13 Nov, most recent first (pre-2016 ones last). |
 | Pull request 15 (merged 13 Nov) | Failure alerts: an issue assigned to the owner when `Daily update` fails, closed on recovery; checks F2/F3 for silent FotMob changes. See "Failure alerts". |
 
 ## Done on 13 Nov 2026
