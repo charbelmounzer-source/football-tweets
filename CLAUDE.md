@@ -22,7 +22,8 @@ rewrites when several things change, and honest feedback over encouragement.
 | Service account | `football-pipeline@football-model-494509.iam.gserviceaccount.com`, roles BigQuery Data Editor + Job User. Key saved as repo secret `GCP_SA_KEY`. |
 | GitHub Actions `Daily update` | Daily 04:23 UTC, ~3 minutes once the history is loaded. Input **rebuild** re-makes core tables from raw (needed once after new columns). |
 | Pull request 9 (merged 13 Nov) | Coverage checks, `rebuild`, 14 new player / 4 team columns, overtake fix, 4 new tweet patterns, "since" rule. Rebuild run on BigQuery 13 Nov: 11,233 matches, 0 errors. |
-| Pull request 11 (merged 13 Nov) | History back to 2010/11 with FotMob's eras; unknown = NULL. See "History back to 2010/11". The older seasons load over the next ~10 runs. |
+| Pull request 11 (merged 13 Nov) | History back to 2010/11 with FotMob's eras; unknown = NULL. See "History back to 2010/11". The older seasons load over the next runs (see "Loading faster"). |
+| Pull request 15 (merged 13 Nov) | Failure alerts: an issue assigned to the owner when `Daily update` fails, closed on recovery; checks F2/F3 for silent FotMob changes. See "Failure alerts". |
 
 ## Done on 13 Nov 2026
 
@@ -132,8 +133,8 @@ Say so plainly when it matters; do not assume these work.
 
 ## Next steps, in order
 
-1. **Let the history load** (~10 runs of 2,000 requests from 13 Nov; run `Daily update` by
-   hand to go faster). Then read `status`: unusable per season (expect ~25% in 2010/11),
+1. **Let the history load** (~18,200 requests from 13 Nov: ~9 runs at the default 2,000, or
+   ~4 runs by hand with a cap of 5,000 - see "Loading faster"). Then read `status`: unusable per season (expect ~25% in 2010/11),
    and the first drafts that use old seasons.
 2. **Tweet quality, with the owner's examples.** He will bring tweets he likes from X; turn
    each into a pattern or a wording rule. Read the drafts of a few days first.
@@ -148,6 +149,14 @@ Say so plainly when it matters; do not assume these work.
    `tweet_id`. Nothing posts yet. Needs an approval step first. The owner said not now.
 6. **Backup source, only if FotMob has a problem.** See "If FotMob breaks" below. Not to be
    built now (owner, 13 Nov): kept as the plan.
+
+## Loading faster (learned 13 Nov)
+
+- GitHub keeps **one running and one waiting** run per concurrency group (`daily-update`):
+  queueing more cancels the waiting one. The owner queued 10 runs on 13 Nov; 8 were cancelled.
+  Cancelled runs do not trigger the failure alert.
+- To load faster, start one run at a time with the input "Request cap for this run" at
+  **5000** (~2 hours at 1.5 s per request; the job's limit is 170 minutes). Not more.
 
 ## Failure alerts (built 13 Nov, owner's request)
 
