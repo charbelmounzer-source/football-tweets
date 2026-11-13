@@ -140,26 +140,32 @@ Say so plainly when it matters; do not assume these work.
 3. **More material from FotMob** if wanted: xG open play vs set play (columns exist, not
    tweeted), per-90 leaders, physical metrics (distance, sprints: only some matches have them),
    shot situations beyond set pieces (fast breaks), player ratings (column exists).
-4. **Failure alerts (owner wants this, before auto-posting).** See "Failure alerts" below.
+4. **Failure alerts: the rest.** The issue alert is built (see "Failure alerts"). Left: the
+   dead man's switch (healthchecks.io: needs the owner to create a free account and a check,
+   then a repo secret with its ping URL; the daily job pings it on success), and "posting
+   paused" in the alert once posting exists.
 5. **Auto-posting to X.** `football_tweets.drafts` already has `status`, `posted_at`,
    `tweet_id`. Nothing posts yet. Needs an approval step first. The owner said not now.
 6. **Backup source, only if FotMob has a problem.** See "If FotMob breaks" below. Not to be
    built now (owner, 13 Nov): kept as the plan.
 
-## Failure alerts (to do, owner's request of 13 Nov)
+## Failure alerts (built 13 Nov, owner's request)
 
-Goal: the owner checks about once a week; anything wrong must reach him without looking.
-What exists: a run stops before drafting on stale data (F1, 36 h) or a check error, and a bad
-FotMob answer never replaces good data. What is missing: telling him. Today a failure is only a
-red run in Actions, and GitHub emails failed *scheduled* runs only to whoever last edited the
-schedule. To build:
-- A clear failure message when the daily job fails (email or a message app), saying which
-  step failed and why: FotMob not answering / answering in another format (field moved,
-  new header or token, HTTP 403/429), a check error, BigQuery error.
-- A "silent" alarm too: no successful run for 36 h, or a run that downloaded nothing new on a
-  matchday, or a sudden drop in fields found (FotMob changed something without failing).
-- When posting exists: posting pauses by itself on any of these, and the alert says so.
-- Ask the owner which channel he wants before building (email is simplest from GitHub Actions).
+The owner checks about once a week; anything wrong must reach him without looking.
+- **Issue alert (done):** when `Daily update` fails, it opens an issue labelled
+  `daily-failure`, assigned to the repo owner (GitHub emails him). `football/alert.py` reads the
+  run's log (`run.log`, written with `tee`; the steps use `shell: bash` so pipefail keeps the
+  failure) and names the cause in plain words. A new failure comments on the open issue; a
+  successful run closes it ("Recovered"). Tried for real on 13 Nov with a temporary failing
+  workflow: open, comment, close all worked (issue #14, a [TEST]).
+- GitHub's own failure emails for *scheduled* runs go to whoever last edited the schedule:
+  that is the "claude" account, not the owner. Hence the issue.
+- **Silent changes:** checks F2 (recent matches without xG / player minutes) and F3 (more
+  than 10 matches without a result 2+ days after kick-off) are errors, so they fail the run
+  and trigger the alert.
+- **Not covered yet:** a run that never starts (GitHub pauses schedules after 60 days without
+  repo activity; Actions outage). Plan: healthchecks.io dead man's switch (see Next steps).
+- When posting exists: posting pauses on any failure, and the alert says so.
 
 ## If FotMob breaks (risk and backup plan, discussed 13 Nov)
 
