@@ -258,7 +258,8 @@ def test_cli_daily_end_to_end(tmp_path, monkeypatch, capsys):
     assert len(w.read("tweets.drafts")) == 10 and open(md, encoding="utf-8").read().count("###") == 10
     cli.main(["status", *common])
     out = capsys.readouterr().out
-    assert "Premier League  2026/27       50       50         0" in out and "update" in out
+    epl = next(line.split() for line in out.splitlines() if line.startswith("Premier League  2026/27"))
+    assert epl[3:9] == ["10", "90", "50", "50", "0", "0"]    # teams, expected, played, details...
     assert "match details still to download: 0" in out
     # a data-quality error stops the run before drafting
     w.replace("core.team_matches", [], {"match_id": FIRST_EPL})
@@ -297,3 +298,61 @@ def test_non_json_answer_is_described_and_the_season_is_asked_for(monkeypatch):
     with pytest.raises(FotMobError, match=r"not JSON - HTTP 200, text/html, 30 bytes, starts with: <html> Just a moment"):
         Client(delay=0, retries=2, sleep=lambda s: None).league("La_Liga", 2020)
     assert asked[0] == "https://www.fotmob.com/api/data/leagues?id=87&season=2020%2F2021"
+
+
+def test_history_coverage_checks(loaded):
+    wh, _, _ = loaded
+    rows = {(r["league"], r["season"]): r for r in checks.coverage(wh, NOW.date())}
+    epl = rows[("Premier League", 2025)]
+    assert (epl["teams"], epl["expected"], epl["played"], epl["details"]) == (10, 90, 90, 90)
+    assert epl["finished"] and epl["share_details"] == 1 and not rows[("Premier League", 2026)]["finished"]
+    past = 2025 * 1000                                              # Premier League 2025/26 match ids
+    # one match FotMob cannot give: 89/90 = 98.9% with details, accepted
+    raw = wh.read("raw.match", None, {"match_id": past})[0]
+    wh.replace("raw.match", [dict(raw, problem="no player stats")], {"match_id": past})
+    for t in ("core.team_stats", "core.player_matches", "core.shots"):
+        wh.replace(t, [], {"match_id": past})
+    results, errors = checks.run_checks(wh, NOW.date(), NOW, log=quiet)
+    assert errors == 0
+    # a second one: 88/90 = 97.8% with details -> a hole, the run stops
+    wh.replace("raw.match", [dict(raw, match_id=past + 1, problem="no player stats")], {"match_id": past + 1})
+    results, errors = checks.run_checks(wh, NOW.date(), NOW, log=quiet)
+    status = {r["check_id"]: (r["status"], r["row_count"]) for r in results}
+    assert status["H2"] == ("error", 1) and errors == 1
+    # a match not yet downloaded is a warning; a match missing from the league list an error
+    wh.replace("raw.match", [], {"match_id": past + 1})
+    wh.replace("core.matches", [], {"match_id": past + 2})
+    results, errors = checks.run_checks(wh, NOW.date(), NOW, log=quiet)
+    status = {r["check_id"]: (r["status"], r["row_count"]) for r in results}
+    assert status["H1"] == ("error", 1) and status["H3"] == ("warn", 1)
+
+
+def test_rebuild_remakes_core_tables_from_raw_without_downloading(loaded):
+    wh, _, _ = loaded
+    key = lambda r: (r["match_id"], r.get("player_id") or r.get("team_id") or r.get("shot_id"))
+    before = {t: sorted(wh.read(f"core.{t}"), key=key)
+              for t in ("player_matches", "team_stats", "shots", "matches", "fixtures")}
+    # as after a new column: the history has NULLs in it
+    old = wh.read("core.player_matches", None, {"season": 2024})
+    wh.replace("core.player_matches", [dict(r, tackles=None) for r in old], {"season": 2024})
+    wh.replace("core.team_stats", [], {"season": 2025})
+    totals = pipeline.rebuild(wh, now=NOW, log=quiet)
+    assert totals["matches"] == CURRENT + HISTORY and totals["leagues"] == N_LEAGUES * 4
+    for t, rows in before.items():
+        assert sorted(wh.read(f"core.{t}"), key=key) == rows, t
+
+
+def test_model_match_new_player_and_keeper_columns():
+    client = FakeFotMob(NOW)
+    payload = client.league("EPL", 2026)
+    m = model_league("Premier League", 2026, slim_league(payload), NOW)["matches"][0]
+    rows = model_match(m, slim_match(client.match(m["match_id"])))
+    players = rows["player_matches"]
+    keepers = [p for p in players if p["saves"] is not None]
+    assert len(keepers) == 2 and all(p["xgot_faced"] is not None for p in keepers)
+    assert all(p["goals_conceded"] == (m["away_goals"] if p["home_away"] == "home" else m["home_goals"])
+               for p in keepers)
+    outfield = [p for p in players if p["saves"] is None]
+    assert all(p[c] is not None for p in outfield for c in ("tackles", "dribbles", "big_chances_created"))
+    assert sum(p["assists"] for p in players) > 0
+    assert all(t["keeper_saves"] == 3 and t["big_chances_missed"] == 1 for t in rows["team_stats"])

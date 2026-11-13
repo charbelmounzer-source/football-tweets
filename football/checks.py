@@ -3,6 +3,8 @@
 error = the data can't be trusted: the daily job stops before drafting tweets.
 warn  = look at it (some are real quirks of the source); tweets are still drafted.
 Every result is stored in core.quality_checks (latest run: view core.latest_checks).
+
+The H checks look at every season loaded, the others at the current season.
 """
 
 from collections import Counter, defaultdict
@@ -11,6 +13,60 @@ from datetime import timedelta
 from . import config
 
 DT = "%Y-%m-%d %H:%M:%S"
+MIN_COVERAGE = 0.98      # below this share of matches (or of match details), a season has a hole
+MAX_XG_MISSING = 0.02    # above this share of detailed matches without xG: warning
+SETTLE_DAYS = 2          # a match this recent may not have its details yet
+
+
+def coverage(wh, today, leagues=None):
+    """One row per league-season: how much of it is in the warehouse.
+    expected = teams x (teams - 1), a double round robin. FotMob lists every match of the
+    season from the start, so `listed` (played + without a result) must reach it."""
+    names = set(leagues) if leagues else None
+    season_now = config.current_season(today)
+    settled = (today - timedelta(days=SETTLE_DAYS)).isoformat()
+    played = [m for m in wh.read("core.matches", ["match_id", "league", "season", "date",
+                                                  "home_team_id", "away_team_id"])
+              if not names or m["league"] in names]
+    fixtures = [f for f in wh.read("core.fixtures", ["league", "season", "status", "home_team_id",
+                                                     "away_team_id"])
+                if not names or f["league"] in names]
+    raw = {r["match_id"]: r["problem"] for r in wh.read("raw.match", ["match_id", "problem"])}
+    xg = {r["match_id"] for r in wh.read("core.team_stats", ["match_id", "xg"]) if r["xg"] is not None}
+    out = {}
+
+    def row(m):
+        return out.setdefault((m["league"], m["season"]), {
+            "league": m["league"], "season": m["season"], "teams": set(), "listed": 0, "played": 0,
+            "cancelled": 0, "settled": 0, "details": 0, "settled_details": 0, "unusable": [], "pending": [], "no_xg": 0})
+    for f in fixtures:
+        r = row(f)
+        r["teams"] |= {f["home_team_id"], f["away_team_id"]}
+        r["listed"] += 1
+        r["cancelled"] += f["status"] == "cancelled"
+    for m in played:
+        r = row(m)
+        r["teams"] |= {m["home_team_id"], m["away_team_id"]}
+        r["listed"] += 1
+        r["played"] += 1
+        old = (m["date"] or "9") <= settled          # recent matches may still be on their way
+        r["settled"] += old
+        if m["match_id"] not in raw:
+            if old:
+                r["pending"].append(m["match_id"])
+        elif raw[m["match_id"]]:
+            r["unusable"].append(m["match_id"])
+        else:
+            r["details"] += 1
+            r["settled_details"] += old
+            r["no_xg"] += m["match_id"] not in xg
+    for r in out.values():
+        n = len(r["teams"])
+        r["teams"], r["expected"] = n, n * (n - 1)
+        r["finished"] = r["season"] < season_now
+        r["share_played"] = r["played"] / r["expected"] if r["expected"] else 0
+        r["share_details"] = r["settled_details"] / r["settled"] if r["settled"] else 1
+    return [out[k] for k in sorted(out)]
 
 
 def run_checks(wh, today, now, leagues=None, log=print):
@@ -104,6 +160,28 @@ def run_checks(wh, today, now, leagues=None, log=print):
           [f"{t['team']} match {t['match_id']}: {t['xg']} vs {shot_xg[(t['match_id'], t['team_id'])]:.2f}"
            for t in team_stats if t["xg"] is not None and t["match_id"] in with_shots
            and t["xg"] - shot_xg[(t["match_id"], t["team_id"])] > 0.3])
+
+    # ---- the whole history: is (almost) every match of every season there?
+    cov = coverage(wh, today, names)
+    label = lambda r: f"{r['league']} {config.season_label(r['season'])}"
+    check("H1", "error", "League-season whose list of matches is shorter than teams x (teams - 1)",
+          [f"{label(r)}: {r['listed']} listed, {r['expected']} expected" for r in cov
+           if r["listed"] < r["expected"]])
+    check("H2", "error", f"Finished league-season with less than {MIN_COVERAGE:.0%} of its matches "
+          f"played, or less than {MIN_COVERAGE:.0%} of its matches with details",
+          [f"{label(r)}: {r['played']}/{r['expected']} played, {r['settled_details']}/{r['settled']} with details"
+           for r in cov if r["finished"] and min(r["share_played"], r["share_details"]) < MIN_COVERAGE])
+    check("H3", "warn", "Played match without a download of its details (2+ days old)",
+          [f"{label(r)}: match {mid}" for r in cov for mid in r["pending"]])
+    check("H4", "warn", f"League-season with more than {MAX_XG_MISSING:.0%} of detailed matches "
+          f"without xG",
+          [f"{label(r)}: {r['no_xg']}/{r['details']}" for r in cov
+           if r["details"] and r["no_xg"] / r["details"] > MAX_XG_MISSING])
+    total = sum(r["played"] for r in cov)
+    gaps = sum(len(r["unusable"]) + len(r["pending"]) for r in cov)
+    log(f"  history: {len(cov)} league-seasons, {total} played matches, "
+        f"{sum(r['details'] for r in cov)} with details, {gaps} without "
+        f"({sum(len(r['unusable']) for r in cov)} that FotMob cannot give)")
 
     check("X1", "warn", "Fixtures postponed (kick-off passed 2+ days ago, no result) or cancelled",
           [f"{f['home_team']} v {f['away_team']} {f['date']} ({f['status']})" for f in fixtures

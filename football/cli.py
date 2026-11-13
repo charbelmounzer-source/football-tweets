@@ -5,6 +5,7 @@
   python -m football check                  # data-quality checks only
   python -m football tweets --top 25        # draft tweets from what is in the warehouse
   python -m football status                 # what is loaded, what is left, last runs
+  python -m football rebuild                # re-make the core tables from raw.* (no download)
 
 Options for every command:
   --backend bigquery|sqlite   (default bigquery; sqlite = a local file, for trying things out)
@@ -14,7 +15,6 @@ Options for every command:
 
 import argparse
 import sys
-from collections import Counter
 from datetime import date
 
 from . import checks, config, pipeline, tweets
@@ -63,20 +63,26 @@ def cmd_daily(wh, args):
                  f"data loaded so far is consistent and the next run retries.")
 
 
+def cmd_rebuild(wh, args):
+    seasons = [int(x) for x in args.seasons.split(",")] if args.seasons else None
+    return pipeline.rebuild(wh, seasons=seasons)
+
+
 def cmd_status(wh, args):
-    played = Counter((m["league"], m["season"]) for m in wh.read("core.matches", ["league", "season"]))
-    raw = wh.read("raw.match", ["league", "season", "problem"])
-    detailed = Counter((m["league"], m["season"]) for m in raw if not m["problem"])
-    unusable = Counter((m["league"], m["season"]) for m in raw if m["problem"])
-    fetched = {(r["league"], r["season"]): r["fetched_at"]
-               for r in wh.read("raw.league", ["league", "season", "fetched_at"])}
-    print(f"{'league':<16}{'season':<9}{'played':>7}{'details':>9}{'unusable':>10}  downloaded (UTC)")
-    for (lg, s) in sorted(played):
-        print(f"{lg:<16}{config.season_label(s):<9}{played[(lg, s)]:>7}{detailed[(lg, s)]:>9}"
-              f"{unusable[(lg, s)]:>10}  {fetched.get((lg, s), '')}")
-    left = sum(played.values()) - len(raw)
-    print(f"\nmatch details still to download: {left}"
+    rows = checks.coverage(wh, args.today or date.today())
+    print(f"{'league':<16}{'season':<9}{'teams':>5}{'expected':>9}{'played':>7}{'details':>8}"
+          f"{'unusable':>9}{'no xG':>6}{'coverage':>9}")
+    for r in rows:
+        print(f"{r['league']:<16}{config.season_label(r['season']):<9}{r['teams']:>5}{r['expected']:>9}"
+              f"{r['played']:>7}{r['details']:>8}{len(r['unusable']):>9}{r['no_xg']:>6}"
+              f"{100 * r['share_details']:>8.1f}%")
+    left = sum(len(r["pending"]) for r in rows)
+    print("\nexpected = teams x (teams - 1); coverage = share of played matches 2+ days old that have details")
+    print(f"match details still to download: {left}"
           + (f" (about {-(-left // config.MAX_REQUESTS)} run(s) of {config.MAX_REQUESTS} requests)" if left else ""))
+    fetched = sorted(r["fetched_at"] for r in wh.read("raw.league", ["fetched_at"]))
+    if fetched:
+        print(f"latest league download (UTC): {fetched[-1]}")
     runs = sorted(wh.read("core.runs"), key=lambda r: r["run_at"])[-5:]
     print("\nlast runs")
     for r in runs:
@@ -110,6 +116,8 @@ def main(argv=None):
     sub.add_parser("check", parents=[common])
     sub.add_parser("tweets", parents=[common, tw])
     sub.add_parser("status", parents=[common])
+    rb = sub.add_parser("rebuild", parents=[common])
+    rb.add_argument("--seasons", help="comma-separated start years, e.g. 2025,2026 (default all)")
     args = p.parse_args(argv)
     if getattr(args, "delay", 1.5) < 1:
         sys.exit("Please keep --delay at 1 second or more: FotMob is a free site.")
@@ -117,7 +125,7 @@ def main(argv=None):
     wh = open_warehouse(args.backend, args.project, args.db)
     wh.ensure()
     result = {"daily": cmd_daily, "update": cmd_update, "check": cmd_check, "tweets": cmd_tweets,
-              "status": cmd_status}[args.cmd](wh, args)
+              "status": cmd_status, "rebuild": cmd_rebuild}[args.cmd](wh, args)
     if args.cmd == "check" and result:
         sys.exit(1)
 

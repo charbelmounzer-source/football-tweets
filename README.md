@@ -24,7 +24,7 @@ up where it stopped.
      loaded yet;
    - match details again for matches of the last 10 days, stored only if FotMob changed them;
    - match details of past seasons, most recent first, until the history is complete.
-2. **Checks** — 10 data-quality checks on the current season, stored in
+2. **Checks** — 14 data-quality checks (coverage of every season, details of the current one), stored in
    `football_core.quality_checks`. An *error* stops the run before any tweet is drafted.
 3. **Tweet drafts** — the best 25 facts across the 5 leagues go to `football_tweets.drafts`
    and to the run's summary page on GitHub.
@@ -71,8 +71,14 @@ python -m football update --max-requests 500  # a smaller slice
 python -m football check                      # checks only (exit code 1 on errors)
 python -m football tweets --top 25 --md drafts.md
 python -m football tweets --date 2026-10-20   # as if today were that day
-python -m football status                     # loaded per league-season, what is left, last runs
+python -m football status                     # coverage per league-season, what is left
+python -m football rebuild                    # re-make core tables from raw.* (no download)
 ```
+
+`rebuild` is needed once after a new column is added to `player_matches` or `team_stats`:
+the stored FotMob answers already hold the value, so the history is filled without asking
+FotMob again (about 10 minutes on BigQuery). On GitHub: *Daily update* → *Run workflow* →
+tick **rebuild**.
 
 Add `--backend sqlite --db try.db` to any command to work in a local file instead of BigQuery.
 `--leagues EPL,La_Liga` limits a run to some leagues (codes: `EPL`, `La_Liga`, `Serie_A`,
@@ -89,8 +95,8 @@ Seasons are stored by start year (`2026` = 2026/27); `season_label` gives `2026/
 | `fixtures` | match without a result | same, plus status: `upcoming`, `awaiting_result` (kicked off < 48 h ago), `postponed`, `cancelled` (abandoned) | league data |
 | `team_matches` | team × played match | home_away, opponent, goals_for/against, result (W/D/L), points | league data |
 | `standings` | team × league-season | position, played, wins, draws, losses, goals, points, and FotMob's season **xg, xga, xpts** | league data |
-| `team_stats` | team × match | xg, xga, npxg, npxga, xgot, shots, shots_on_target, shot_goals, big_chances, possession, corners, touches_in_box | match details |
-| `player_matches` | player × match he played in | team, started, minutes, goals, penalty_goals, own_goals, assists, shots, shots_on_target, xg, npxg, xgot, xa, key_passes, touches, yellow, red, rating | match details |
+| `team_stats` | team × match | xg, xga, npxg, npxga, xgot, shots, shots_on_target, shot_goals, big_chances, big_chances_missed, xg_open_play, xg_set_play, possession, corners, touches_in_box, keeper_saves | match details |
+| `player_matches` | player × match he played in | team, started, minutes, goals, penalty_goals, own_goals, assists, shots, shots_on_target, xg, npxg, xgot, xa, key_passes (chances created), big_chances_created, big_chances_missed, touches, touches_in_box, dribbles, tackles, interceptions, recoveries, duels_won, aerials_won, passes_final_third, yellow, red, rating; goalkeepers also saves, goals_conceded, xgot_faced, goals_prevented (NULL for outfield players) | match details |
 | `shots` | shot | minute, period, player, team, result (`Goal`, `AttemptSaved`, `Miss`, `Post`), on_target, blocked, own_goal, xg, xgot, x, y, inside_box, situation, shot_type | match details |
 | `quality_checks` | check × run | level, row_count, status, sample — view `latest_checks` = last run | |
 | `runs` | pipeline run | requests, matches new / corrected / of past seasons, seconds, errors | |
@@ -126,6 +132,10 @@ Things to know about the data:
 | M1 | error | a match id present twice, or in both `matches` and `fixtures` |
 | M2 | error | a played match without exactly 2 team rows |
 | S1 | warn | FotMob's league table disagrees with the results (played, points) |
+| H1 | error | a league-season (any season) lists fewer matches than teams × (teams − 1) |
+| H2 | error | a finished season with less than 98% of its matches played, or less than 98% of them with details |
+| H3 | warn | a played match (2+ days old) whose details were never downloaded |
+| H4 | warn | a league-season with more than 2% of detailed matches without xG |
 | D1 | warn | a match played 2+ days ago without player details |
 | D2 | warn | score ≠ players' goals + own goals |
 | D3 | warn | a player's goals ≠ his goals in the shot data |
@@ -133,27 +143,58 @@ Things to know about the data:
 | D5 | warn | a team's xG is higher than the sum of its shots' xG by more than 0.3 (shots missing) |
 | X1 | warn | postponed or cancelled fixtures |
 
+The H checks cover every season loaded; the others the current one. Each run also prints one
+line: league-seasons, played matches, how many have details. A match FotMob has no details
+for (two since 2020/21 on 13 Nov 2026) is accepted: below 2% of a season it is not a hole.
+`python -m football status` shows the same per league-season (teams, expected, played,
+details, unusable, no xG, coverage).
+
 ## Tweet drafts
 
-Six fact patterns, each run over every team and player: `contrast` (top 3 for one stat, bottom 5
-for its partner), `streak` (droughts ended, runs), `start` (best/worst start vs past seasons),
-`overtake` (a scorer passes his tally for a previous club), `luck` (goals vs xG, points vs xPts,
-finishing), `preview` (head-to-head runs before next week's fixtures).
+Ten fact patterns, each run over every team and player:
+
+| Pattern | About | Example |
+|---|---|---|
+| `contrast` | team | top 3 for one stat, bottom 5 for its partner (shots vs conversion, xG vs goals...) |
+| `streak` | team | droughts that just ended; unbeaten / winning / winless / losing / scoring runs |
+| `start` | team | best or worst start after N matches since a season 3+ years ago |
+| `luck` | team, player | goals vs xG, points vs xPts, shot-stopping (conceded vs xGOT against), finishing |
+| `preview` | fixture | head-to-head runs before next week's matches |
+| `overtake` | player | a scorer passes his league tally for a previous club |
+| `player_streak` | player | scored (or scored/assisted) in N appearances in a row |
+| `pace` | player | most goals / assists / goal involvements after N team matches since someone last had as many |
+| `performance` | player | last matchday: hat-tricks, 3+ assists, goalkeeping (goals prevented on xGOT) |
+| `leader` | player, team | season leader with a clear gap (25% and 3 ahead): chances created, big chances, xA, dribbles, tackles, interceptions, goals prevented; teams: big chances missed, set-piece goals |
 
 Score = rarity × context (1.5 played on the last matchday, 1.3 plays next) × club popularity
 (`config/clubs.csv`: club as FotMob spells it, hashtag, popularity 1–3). At most 2 drafts per
-team or player; a fact drafted in the last 14 days is not drafted again; drafts over 280
+team or player, at most 30% of the drafts from one pattern; a fact drafted in the last 14
+days is not drafted again; drafts over 280
 characters as X counts them (emoji = 2) are dropped.
 
 Rules that keep the numbers true:
-- "since 2020/21" comes from the data (first season loaded for that league), never "ever".
+- **A "since" claim names a season when it really happened.** "The most since X had 9 in
+  2022/23", "their best start since 2021/22 (20 then)", "their longest since 2023/24": the
+  named season is the most recent one in the data in which the same level was reached, and
+  nobody has reached it since. If nobody in the data reached it, the last time is before
+  2020/21 (or never) and is unknown: no claim is made. A tweet never says "since 2020/21"
+  only because the data starts there; counts bounded by the data start ("his 5th hat-trick
+  since 2020/21") and "for the first time in our data" are not used either.
 - A run that goes back to the first match in the data is not tweeted: its real length is unknown.
 - Season xG, xG against and expected points are FotMob's league-table figures, used only when
   the table counts as many matches as the results do.
 - Shot-based stats need every match of the team to have its details.
-- Player season totals (`finishing`) need every match of the league this season; `overtake`
-  needs every match of every loaded season, and never names a previous club the player may
-  have joined before the data starts.
+- Player season totals (`finishing`, runs, leaders) need every match of the league this season
+  downloaded; `overtake` and `pace` need every match of every loaded season, and `overtake`
+  never names a previous club the player may have joined before the data starts.
+- A match FotMob has no details for leaves a hole only in its two teams' player totals of
+  that season: those players are left out of season totals and `overtake`, and a `pace`
+  record must beat a total from such a team-season by 2, not 1.
+- A leader stat waits until its column is loaded for every match of the season (`rebuild`).
+- "Their best/worst start since S" needs S at least 3 seasons ago. A promoted team's first
+  clean sheet or win says "for the first time this season, at the Nth attempt".
+- Each punch line belongs to one meaning ("Hard to beat" only on unbeaten runs, "Wasteful"
+  only where chances were missed).
 - An xG "start" compares only seasons whose first matches all have their details.
 - No "last matchday" facts when the latest result is more than 10 days old (summer, breaks).
 

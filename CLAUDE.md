@@ -1,6 +1,6 @@
 # Context for the next session
 
-Read this first. It is the state of the project on 12 November 2026 and what to do next.
+Read this first. It is the state of the project on 13 November 2026 and what to do next.
 `README.md` has the user-facing documentation; this file has the history and the open items.
 
 ## What the project is
@@ -16,11 +16,35 @@ rewrites when several things change, and honest feedback over encouragement.
 
 | Piece | State |
 |---|---|
-| Pipeline (`football/`) | Rebuilt on FotMob only on 12 Nov 2026 (pull request 8; pull request 7 was only a probe). 32 tests pass on a simulated FotMob. |
-| Real-data trials | Run on GitHub runners into SQLite, not BigQuery (see below). All five leagues, current season. |
-| BigQuery project `football-model-494509` | Billing enabled. Datasets `football_raw`, `football_core`, `football_tweets` exist with the **old Understat tables, empty** except `core.runs` and `core.quality_checks`. The first run replaces the empty ones (see `BigQueryWarehouse.ensure`). |
+| Pipeline (`football/`) | FotMob only (pull request 8, 12 Nov). Runs every day on BigQuery since 12 Nov, no error. |
+| History | **Complete** since 13 Nov: 35 league-seasons 2020/21-2026/27, ~11,800 matches, all with details but 2 that FotMob cannot give (Bologna-Udinese 2020/21, Mallorca-Girona 2023/24, "no player stats"). Every season has its full schedule (teams x (teams-1); Serie A 2022/23 has 381 with the play-off). xG on every detailed match but one (Ligue 1 2020/21). |
+| BigQuery project `football-model-494509` | Billing enabled, datasets `football_raw`, `football_core`, `football_tweets`. `replace()`, views and old-table replacement work on the real project. |
 | Service account | `football-pipeline@football-model-494509.iam.gserviceaccount.com`, roles BigQuery Data Editor + Job User. Key saved as repo secret `GCP_SA_KEY`. |
-| GitHub Actions `Daily update` | Was failing since Understat went down (2 Nov 2026); may have been disabled by the owner: check the Actions tab. Not run yet with the FotMob code. |
+| GitHub Actions `Daily update` | Daily 04:23 UTC, ~3 minutes once the history is loaded. Input **rebuild** re-makes core tables from raw (needed once after new columns). |
+| Branch `data-checks-and-tweets` (13 Nov) | Coverage checks H1-H4, `rebuild` command, 14 new player / 4 team columns, overtake fix, 4 new tweet patterns. See "Done on 13 Nov". |
+
+## Done on 13 Nov 2026
+
+- **Coverage checks** over every season (`checks.coverage`, H1-H4, `status` table): the owner
+  wants to know that (almost) every match of every season is there; 1-2 missing matches are fine.
+- **overtake was permanently off**: it waited for every match to have details, and 2 never
+  will. "Complete" now means every match downloaded; the 2 unusable matches are holes of
+  their two teams in that season only (`Data.holes`): those players' tallies are skipped.
+- **Player data was always there, just unused** by the tweets. New columns from the stored
+  answers (no new request): big chances created/missed, touches in box, dribbles, tackles,
+  interceptions, recoveries, duels, aerials, passes into final third; keepers: saves, goals
+  conceded, xGOT faced, goals prevented. Teams: big chances missed, open-play / set-piece xG,
+  keeper saves. `rebuild` fills the history from raw.
+- **New tweet patterns**: player_streak, pace, performance (hat-tricks, 3+ assists,
+  goalkeeping), leader (players and teams, incl. set-piece goals); shot-stopping in `luck`.
+- **"Since" claims (owner's request)**: a record names the most recent season *in the data*
+  when the same level was reached ("since X had 9 in 2022/23"); if nobody in the data
+  reached it, no claim (`tweets.last_reached`). Before, "the most since 2020/21" only meant
+  "since our data starts". Also fixed: `overtake` now also needs the *current* club to start
+  after the data does (his tally there could be short).
+- **Quality fixes**: punch lines per meaning; "their longest since" needs 3 seasons in the
+  league (promoted Hull City); a promoted team's first clean sheet says "this season, at the
+  Nth attempt"; `start` needs 3 past seasons; at most 30% of the drafts from one pattern.
 
 ## Why FotMob
 
@@ -68,40 +92,29 @@ dropping the Understat archive rather than bridging two id systems and two xG mo
 
 Say so plainly when it matters; do not assume these work.
 
-- **Anything on the real BigQuery project with this code.** `replace()` (staging table +
-  `DELETE`/`INSERT` in one transaction), the four views, and the replacement of the old empty
-  tables are only tested against a stand-in for the client library. A cloud Claude session
-  cannot reach the project. The first `Daily update` run is the test: read its log.
-- **Past seasons' match details**, beyond 25 matches of 2025/26 loaded in a trial.
-- **FotMob's tolerance for 2,000 requests in one run** and for daily runs. 560 worked once.
+- **FotMob's tolerance** over months of daily runs. 2,000 requests in one run worked (12 Nov).
 - **Postponed matches**: none seen. The status is derived from time (kick-off passed 48 h ago,
   no result), not from a FotMob field.
-- **`overtake` tweets on real data**: they stay off until every match since 2020/21 has its
-  details.
-- **FotMob spellings in `config/clubs.csv`** for clubs not in a top league this season
-  (West Ham United, Wolverhampton Wanderers and Burnley were seen in 2023/24).
+- **The cancelled Rayo Vallecano v Athletic Club** is listed with kick-off 2026-12-09 although
+  the match was abandoned earlier: FotMob may move the date of a cancelled match to the
+  replay date. Not looked at.
+- **What FotMob's "tackles" counts** (attempted or won) and "dribbles" (`dribbles_succeeded`,
+  first number of [won, attempted]). The tweets say "made N tackles", "completed N dribbles".
+- **FotMob spellings in `config/clubs.csv`** for clubs not in a top league this season.
 
 ## Next steps, in order
 
-1. **Merge pull request 8, then run `Daily update` by hand** (Actions tab) and read the log.
-   Expect: 35 league answers, 500 matches of this season, ~1,465 of last season, then
-   "request cap reached". About one hour. If BigQuery refuses something, that is the item
-   "never verified" above: fix it first.
-2. **Let the history load.** ~10,700 matches of past seasons, 2,000 per run: six runs. The
-   schedule does it in six days; running by hand is faster. `python -m football status`.
-3. **Look at the history once loaded**: unusable matches, `xg` NULL by league and season,
-   check warnings. Decide whether `FIRST_SEASON` holds for all five leagues.
-4. **Tweet quality.** The owner wants to work on what makes a tweet interesting. Known weak
-   spots seen on real drafts: "their longest since 2020/21" for a club with a handful of
-   matches in the data (Hull City, promoted this season); punch lines that do not fit the stat
-   ("Wasteful" on a points total); 54 of 106 facts are `start` facts. Patterns and scoring are
-   in `football/tweets.py`; rules that keep numbers true are in the README.
-5. **New tweet material FotMob gives** that is not used yet: xGOT (finishing and
-   goalkeeping), big chances, possession, player ratings, touches in the box, shot situations
-   (corners, fast breaks, set pieces).
-6. **Auto-posting to X.** `football_tweets.drafts` already has `status`, `posted_at`,
-   `tweet_id`. Nothing posts yet. Needs an approval step first.
-7. **A fallback for results.** One unofficial site is still the weak point. football-data.co.uk
+1. **Merge the branch, then run `Daily update` once with rebuild ticked** (~10 minutes more
+   than a normal run). Tried on a copy of the real data on 13 Nov: 11,233 matches re-modelled,
+   every new column filled, 14 checks, 0 errors.
+2. **Tweet quality, with the owner's examples.** He will bring tweets he likes from X; turn
+   each into a pattern or a wording rule. Read the drafts of a few days first.
+3. **More material from FotMob** if wanted: xG open play vs set play (columns exist, not
+   tweeted), per-90 leaders, physical metrics (distance, sprints: only some matches have them),
+   shot situations beyond set pieces (fast breaks), player ratings (column exists).
+4. **Auto-posting to X.** `football_tweets.drafts` already has `status`, `posted_at`,
+   `tweet_id`. Nothing posts yet. Needs an approval step first. The owner said not now.
+5. **A fallback for results.** One unofficial site is still the weak point. football-data.co.uk
    (CSV, results and shots, no xG) or football-data.org (official API, results) could keep the
    results-only tweets alive if FotMob closes. Not built; the owner chose one source for now.
 
@@ -131,8 +144,11 @@ python -m football <command> --backend sqlite --db try.db      # local file inst
 - Changes go on a branch with a pull request; the owner merges.
 - A cloud Claude session cannot reach fotmob.com, the BigQuery project, or the files a
   workflow run saves. It **can** push a branch and read workflow logs through the GitHub API.
-  To see real data: a temporary workflow on the branch (trigger `push`) that runs the pipeline
-  with `--backend sqlite` and prints what is needed to the log; remove it before merge.
+  To see real data: a temporary workflow on the branch (trigger `push`, secret `GCP_SA_KEY`)
+  that **reads** BigQuery, copies raw.* into SQLite on the runner, runs `rebuild`, checks and
+  tweets there and prints to the log (done on 13 Nov; see the branch history of
+  `scripts/probe.py`). Never write to
+  the real project from a branch. Remove the workflow before merge.
 
 ## Lessons
 

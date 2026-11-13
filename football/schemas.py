@@ -50,6 +50,8 @@ TEAM_STATS = MATCH_KEYS + [
     ("xgot", "FLOAT64"), ("shots", "INT64"), ("shots_on_target", "INT64"), ("shot_goals", "INT64"),
     ("big_chances", "INT64"), ("possession", "INT64"), ("corners", "INT64"),
     ("touches_in_box", "INT64"),
+    ("big_chances_missed", "INT64"), ("xg_open_play", "FLOAT64"), ("xg_set_play", "FLOAT64"),
+    ("keeper_saves", "INT64"),
 ]
 PLAYER_MATCHES = MATCH_KEYS + [
     ("player_id", "INT64"), ("player", "STRING"), ("team_id", "INT64"), ("team", "STRING"),
@@ -59,6 +61,13 @@ PLAYER_MATCHES = MATCH_KEYS + [
     ("xg", "FLOAT64"), ("npxg", "FLOAT64"), ("xgot", "FLOAT64"), ("xa", "FLOAT64"),
     ("key_passes", "INT64"), ("touches", "INT64"), ("yellow", "INT64"), ("red", "INT64"),
     ("rating", "FLOAT64"),
+    # added 13 Nov 2026; filled for the history by `python -m football rebuild` (no download)
+    ("big_chances_created", "INT64"), ("big_chances_missed", "INT64"),
+    ("touches_in_box", "INT64"), ("dribbles", "INT64"), ("tackles", "INT64"),
+    ("interceptions", "INT64"), ("recoveries", "INT64"), ("duels_won", "INT64"),
+    ("aerials_won", "INT64"), ("passes_final_third", "INT64"),
+    ("saves", "INT64"), ("goals_conceded", "INT64"), ("xgot_faced", "FLOAT64"),
+    ("goals_prevented", "FLOAT64"),
 ]
 SHOTS = [
     ("shot_id", "INT64"), ("match_id", "INT64"), ("league", "STRING"), ("season", "INT64"),
