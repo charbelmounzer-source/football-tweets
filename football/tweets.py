@@ -25,8 +25,12 @@ How it works
      next to each draft.
 
 Reads the warehouse (core.*), writes tweets.drafts. The drafts table is also the history
-that prevents repeats. History starts with the first season loaded for each league, so
-facts say "since 2020/21", never "ever".
+that prevents repeats.
+
+Record claims ("the most since ...", "their longest since ...") name the most recent season
+IN THE DATA when someone reached the same level (last_reached). If nobody in the data did,
+the real answer lies before the first season loaded and is unknown: no claim is made. So a
+tweet never says "since 2020/21" just because the data starts there.
 """
 
 import csv
@@ -129,6 +133,28 @@ def rank_phrase(rank, tied, n, best_word, worst_word, noun):
         k, word = n - rank + 1, worst_word
     prefix = ("joint-" if tied else "") + ("" if k == 1 else f"{ordinal(k)}-")
     return f"the {prefix}{word} {noun}"
+
+
+def last_reached(entries, value, higher_better):
+    """entries: [(value, season, who)]. The most recent entry that reached `value` (as high,
+    or as low when lower is better), or None. "The most since <its season>" is then true:
+    someone got there in that season and nobody has since. None means nobody in the data got
+    there: the last time, if any, is before the data starts, so no "since" claim can be made."""
+    hits = [e for e in entries if (e[0] >= value if higher_better else e[0] <= value)]
+    return max(hits, key=lambda e: (e[1], e[0] if higher_better else -e[0])) if hits else None
+
+
+def runs_of(rows, test):
+    """Every maximal run: [(length, season of its last match)], the ongoing one included."""
+    out, n = [], 0
+    for i, r in enumerate(rows):
+        if test(r):
+            n += 1
+            if i == len(rows) - 1 or not test(rows[i + 1]):
+                out.append((n, r["season"]))
+        else:
+            n = 0
+    return out
 
 
 def the(league):
@@ -484,7 +510,6 @@ def longest_run(rows, test):
 
 def gen_streaks(d, lg):
     seq = team_sequences(d, lg)
-    since = d.since(lg)
     facts = []
     for tid, rows in seq.items():
         last = rows[-1]
@@ -513,12 +538,11 @@ def gen_streaks(d, lg):
                 text = (f"🚨 {team} have {words} in {the(lg)} for the first time this season, "
                         f"at the {ordinal(gap + 1)} attempt.")
             else:
-                text = (f"🚨 {team} have {words} in {the(lg)} for the first time in our data "
-                        f"(since {since}).")
+                continue                             # the last time is before our data: unknown
             facts.append(Fact(
                 "streak", lg, team, text, rarity=5 + min(gap, 30) / 4,
                 evidence={"event": ev, "matches_without": gap, "ended_vs": opp, "date": last["date"],
-                          "previous": ev_rows[prev[-1]]["date"] if prev else f"none since {since}",
+                          "previous": ev_rows[prev[-1]]["date"] if prev else "none this season",
                           "counted": match_word},
                 fact_id=f"drought|{lg}|{ev}|{tid}|{last['match_id']}", team=team, team_id=tid,
                 context=1.5))
@@ -527,17 +551,25 @@ def gen_streaks(d, lg):
             length = run_length(rows, test)
             if length < minimum or length == len(rows):
                 continue                             # a run older than our data has no known length
-            own_best = longest_run(rows[:-length], test) if len(rows) > length else 0
-            league_best = max((longest_run(r2, test) for t2, r2 in seq.items() if t2 != tid), default=0)
+            own = [(n, season, team) for n, season in runs_of(rows[:-length], test)]
+            others = [(n, season, r2[-1]["team"]) for t2, r2 in seq.items() if t2 != tid
+                      for n, season in runs_of(r2, test)]
+            own_ref = last_reached(own, length, True)
+            league_ref = last_reached(own + others, length, True)
+            own_best = max((n for n, *_ in own), default=0)
+            league_best = max((n for n, *_ in others), default=0)
             notes, rarity = [], 3 + min(length, 30) / 3
-            seasons_here = len({r["season"] for r in rows})
-            if length > own_best and seasons_here >= 3:
-                # only with some history: "their longest" means little for a promoted team
-                notes.append(f"their longest in any of their {seasons_here} {lg} seasons since {since}")
-                rarity += 2
-            if length > league_best:
-                notes.append(f"the longest by any {lg} team since {since}")
-                rarity += 3
+            # "since S" only when S is a past season in which a run this long happened;
+            # nobody in the data -> the last time is before it -> no claim
+            if league_ref and league_ref[1] < d.season:
+                n2, s2, who = league_ref
+                by = (f"their own run of {n2}" if who == team else
+                      f"{who}{' also' if n2 == length else ''} had {n2}")
+                notes.append(f"the longest by any {lg} team since {by} in {season_label(s2)}")
+                rarity += 2 + min(d.season - s2, 4) / 2
+            elif own_ref and own_ref[1] <= d.season - 2:
+                notes.append(f"their longest since {season_label(own_ref[1])}")
+                rarity += 1 + min(d.season - own_ref[1], 4) / 2
             if not notes and length < minimum + 3:
                 continue
             extra = f" - {' and '.join(notes)}" if notes else ""
@@ -547,7 +579,10 @@ def gen_streaks(d, lg):
             facts.append(Fact(
                 "streak", lg, team, text, rarity=rarity,
                 evidence={"run": run, "length": length, "team_best_before": own_best,
-                          "other_teams_best": league_best, "last_match": last["date"]},
+                          "other_teams_best": league_best, "last_match": last["date"],
+                          "own_last_as_long": f"{own_ref[0]} in {season_label(own_ref[1])}" if own_ref else "none in data",
+                          "league_last_as_long": f"{league_ref[2]} {league_ref[0]} in {season_label(league_ref[1])}"
+                          if league_ref else "none in data"},
                 fact_id=f"run|{lg}|{run}|{tid}|{length}", team=team, team_id=tid, context=1.5))
     return facts
 
@@ -560,11 +595,11 @@ START_METRICS = {   # key: (column, higher is better, words); punch line PUNCH["
     "xg": ("xg", True, "xG"),
 }
 START_MIN_PAST_SEASONS = 3   # "their best start" needs a few seasons to compare with
+# and "their best start since S" needs S at least 3 seasons ago, or it is not a story
 
 
 def gen_start(d, lg):
     seq = team_sequences(d, lg)
-    since = d.since(lg)
     facts = []
     by_team_season = defaultdict(list)
     for tid, rows in seq.items():
@@ -589,43 +624,46 @@ def gen_start(d, lg):
                     if t == tid and s != d.season and usable(rs)}
             if len(past) < START_MIN_PAST_SEASONS:
                 continue
-            better = (lambda a, b: a > b) if hib else (lambda a, b: a < b)
-            if all(better(now, v) for v in past.values()):
-                kind = "best"
-            elif all(better(v, now) for v in past.values()):
-                kind = "worst"
+            # a season of this team that cannot be counted (xG missing) could hide the answer
+            gaps = {s for (t, s), rs in by_team_season.items()
+                    if t == tid and s != d.season and len(rs) >= n and not usable(rs)}
+            v_txt = fmt(now, kind_fmt)
+            for kind in ("best", "worst"):
+                as_good = hib if kind == "best" else not hib       # direction of "reached"
+                ref = last_reached([(v, s, team) for s, v in past.items()], now, as_good)
+                if ref is None or ref[1] > d.season - 3 or any(g > ref[1] for g in gaps):
+                    continue                  # unknown (before our data), too recent, or a gap
+                break
             else:
                 continue
-            league_all = {(t, s): total(rs) for (t, s), rs in by_team_season.items()
-                          if s != d.season and usable(rs)}
-            if key == "xg" and not d.history_complete:
-                league_all = {}                           # no "best by any team" on a partial history
-            league_record = bool(league_all) and all(better(now, v) for v in league_all.values())
-            # the previous record: the best past value for a "best" start, the worst for a "worst"
-            pick_ref = max if (kind == "best") == hib else min
-            ref_v = pick_ref(past.values())
-            ref_seasons = sorted(s for s, v in past.items() if v == ref_v)
-            ref_when = season_label(ref_seasons[-1]) + (" and others" if len(ref_seasons) > 2 else
-                                                         f" and {season_label(ref_seasons[0])}"
-                                                         if len(ref_seasons) == 2 else "")
-            v_txt, ref_txt = fmt(now, kind_fmt), fmt(ref_v, kind_fmt)
-            if v_txt == ref_txt:
-                continue                                  # equal once rounded: not a story
-            if league_record and kind == "best":
+            ref_v, ref_s, _ = ref
+            ref_txt = fmt(ref_v, kind_fmt)
+            # the whole league, current season included (another team may be ahead right now)
+            league_all = [(total(rs), s, rs[0]["team"]) for (t, s), rs in by_team_season.items()
+                          if (t, s) != (tid, d.season) and usable(rs)]
+            league_gaps = {s for (t, s), rs in by_team_season.items()
+                           if len(rs) >= n and not usable(rs)}
+            league_ref = last_reached(league_all, now, as_good) if kind == "best" else None
+            league_record = bool(league_ref and league_ref[1] < d.season
+                                 and not any(g > league_ref[1] for g in league_gaps))
+            if league_record:
+                lv, ls, lteam = league_ref
+                by = ("their own" if lteam == team else
+                      f"{lteam}{' also' if fmt(lv, kind_fmt) == v_txt else ''} had")
                 text = (f"📈 {team} have {v_txt} {words} after {n} {lg} matches - the best start by "
-                        f"any {lg} team since {since}.")
-                rarity = 9
+                        f"any {lg} team since {by} {fmt(lv, kind_fmt)} in {season_label(ls)}.")
+                rarity = 8 + min(d.season - ls, 4) / 2
             else:
-                k = len(past) + 1
-                text = (f"📊 {team} have {v_txt} {words} after {n} {lg} matches - their {kind} start in "
-                        f"any of their {k} {lg} seasons since {since} (previous {kind}: "
-                        f"{ref_txt} in {ref_when}).")
-                rarity = 6 if kind == "best" else 6.5
+                same = "the same" if ref_txt == v_txt else ref_txt
+                text = (f"📊 {team} have {v_txt} {words} after {n} {lg} matches - their {kind} start "
+                        f"since {season_label(ref_s)} ({same} then).")
+                rarity = 5.5 + min(d.season - ref_s, 5) / 2
             text += f"\n\n{pick(PUNCH[f'{kind}_{key}'], team + key)}"
             f = Fact("start", lg, team, text, rarity=rarity,
                      evidence={"stat": key, "now": v_txt, "matches": n, "kind": kind,
                                "past_seasons": "; ".join(f"{season_label(s)}: {fmt(v, kind_fmt)}"
                                                          for s, v in sorted(past.items())),
+                               "last_as_good": f"{ref_txt} in {season_label(ref_s)}",
                                "league_record": league_record},
                      fact_id=f"start|{lg}|{key}|{kind}|{tid}|{n}", team=team, team_id=tid, context=1.5)
             if best_fact is None or f.rarity > best_fact.rarity:
@@ -652,8 +690,9 @@ def gen_overtake(d, lg):
             d.unreliable += 1                        # history not complete yet
             continue
         here = clubs[team]
-        if here["hole"]:
-            continue                                 # a match of his club has no details
+        if here["hole"] or here["first_season"] <= d.first_season.get(here["league"], 0):
+            continue    # a match of his club has no details, or he may have scored for them
+                        # before our data starts: his tally there is not known
         before = here["goals"] - (p["goals"] or 0)
         for prev_team, c in clubs.items():
             if prev_team == team or c["goals"] < 5 or c["hole"]:
@@ -905,27 +944,26 @@ def gen_pace(d, lg):
                     continue
                 season, pid, tid = key
                 other = at(key, n)[metric]
-                # a team-season with a match FotMob has no details for may hide a goal
-                rivals.append((other + (1 if d.hole(tid, season) else 0), other, season, pid))
-            margin, shown, *who = max(rivals, default=(0, 0, None, None))
-            if v <= margin:
-                continue
-            top = (shown, *who)
-            if top[1] is None:
-                prev = ""
-            elif top[1] == d.season:                  # a rival this season, not a past record
-                prev = f" (next best: {names.get(top[2], '?')}, {top[0]})"
-            elif top[2] == p["player_id"]:
-                prev = f" (his own previous best: {top[0]} in {season_label(top[1])})"
+                # a team-season with a match FotMob has no details for may hide one more
+                maybe = other + (1 if d.hole(tid, season) else 0)
+                rivals.append((maybe, season, (other, pid)))
+            ref = last_reached(rivals, v, True)
+            if ref is None or ref[1] == d.season or ref[2][0] < v:
+                continue    # nobody in our data got there (the last time is unknown), someone
+                            # has it this season, or the latest one is only possible (a hole)
+            (other, pid), ref_s = ref[2], ref[1]
+            if pid == p["player_id"]:
+                by = f"his own {other}"
             else:
-                prev = f" (previous best: {top[0]}, {names.get(top[2], '?')} in {season_label(top[1])})"
+                by = f"{names.get(pid, '?')}{' also' if other == v else ''} had {other}"
             text = (f"📈 {p['player']} has {v} {lg} {words} after {n} matches of the season - the "
-                    f"most by any {lg} player at this stage since {d.since(lg)}{prev}.")
-            f = Fact("pace", lg, p["player"], text, rarity=9 + min(v - margin, 4) / 2,
+                    f"most by any {lg} player at this stage since {by} in {season_label(ref_s)}.")
+            margin = max((r[0] for r in rivals if r[1] > ref_s), default=0)
+            top = (other, ref_s, pid)
+            f = Fact("pace", lg, p["player"], text, rarity=8 + min(d.season - ref_s, 4) / 2,
                      evidence={"metric": metric, "value": v, "team_matches": n,
-                               "previous_best": top[0],
-                               "previous_best_by": f"{names.get(top[2], '?')} {season_label(top[1])}"
-                               if top[1] is not None else None},
+                               "last_as_many": f"{names.get(top[2], '?')} {top[0]} in {season_label(top[1])}",
+                               "best_since_then": margin},
                      fact_id=f"pace|{lg}|{metric}|{p['player_id']}|{n}", team=p["team"],
                      team_id=p["team_id"], context=1.5)
             if best_fact is None or f.rarity > best_fact.rarity:
@@ -954,12 +992,6 @@ def gen_performances(d, lg):
             what = "a hat-trick" if goals == 3 else f"{goals} goals"
             which = "the first" if nth == 1 else f"the {ordinal(nth)}"
             text = f"🎩 {name} scored {what} against {opp} - {which} {lg} hat-trick this season."
-            if d.history_complete and not d.hole(p["team_id"]):
-                mine = sum(1 for q in d.all_player_matches()
-                           if q["player_id"] == p["player_id"] and (q["goals"] or 0) >= 3)
-                if mine >= 2:
-                    text += (f"\n\nHis {ordinal(mine)} in Europe's top five leagues since "
-                             f"{season_label(min(d.first_season.values()))}.")
             facts.append(Fact("performance", lg, name, text, rarity=7.5 + goals - 3,
                               evidence={"goals": goals, "opponent": opp, "date": p["date"],
                                         "hat_tricks_in_league_this_season": len(earlier)},

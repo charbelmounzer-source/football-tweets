@@ -220,7 +220,9 @@ def test_new_player_patterns_find_something_and_numbers_are_true(loaded):
             total = sum((p["goals"] if col in ("goals", "involvements") else 0)
                         + (p["assists"] if col in ("assists", "involvements") else 0)
                         for p in rows_of[(f.league, pid)])
-            assert total == f.evidence["value"] > f.evidence["previous_best"]
+            assert total == f.evidence["value"]
+            named = int(f.evidence["last_as_many"].split(" in ")[0].split()[-1])
+            assert named >= f.evidence["value"] > f.evidence["best_since_then"]
         if f.kind == "performance" and f.fact_id.startswith("hat_trick"):
             assert f.evidence["goals"] >= 3
 
@@ -254,3 +256,50 @@ def test_leaders_wait_for_new_columns_to_be_loaded(loaded):
     wh.replace("core.player_matches", [dict(r, big_chances_created=None) for r in rows],
                {"match_id": first_la_liga})                  # as before `rebuild` fills the column
     assert not leader()
+
+
+# ---------------------------------------------------------------- "since" claims (13 Nov 2026)
+def test_last_reached():
+    entries = [(7, 2023, "a"), (9, 2024, "b"), (8, 2025, "c"), (5, 2026, "d")]
+    assert tweets.last_reached(entries, 8, True) == (8, 2025, "c")
+    assert tweets.last_reached(entries, 9, True) == (9, 2024, "b")
+    assert tweets.last_reached(entries, 10, True) is None          # before our data: unknown
+    assert tweets.last_reached(entries, 6, False) == (5, 2026, "d")
+
+
+def test_since_claims_name_a_season_when_it_really_happened(loaded):
+    """No tweet says "since <first season>" only because the data starts there: every
+    "since S" names a season in which the same level was reached, and nothing since."""
+    import re
+    wh, _, _ = loaded
+    d = Data(wh, None, TODAY)
+    facts = find_facts(d)
+    first = tweets.season_label(min(d.first_season.values()))
+    for f in facts:
+        assert "in our data" not in f.text and "top five leagues since" not in f.text
+        for m in re.finditer(r"since (\S.*?) in (\d{4}/\d{2})", f.text):
+            assert f.kind in ("streak", "start", "pace"), f.text
+        if f.kind == "streak" and "run" in f.evidence and "since" in f.text:
+            test, length = tweets.RUNS[f.evidence["run"]][0], f.evidence["length"]
+            season = re.search(r"since .*?(\d{4})/\d{2}", f.text).group(1)
+            own_only = "their longest since" in f.text
+            runs = [(n, s) for (lg, t), rows in d.team_seq.items() if lg == f.league
+                    and (t == f.team_id or not own_only)
+                    for n, s in tweets.runs_of(rows if t != f.team_id else rows[:-length], test)]
+            assert any(n >= length and s == int(season) for n, s in runs), f.text
+            assert not any(n >= length and s > int(season) for n, s in runs), f.text
+        if f.kind == "start":
+            ref_season = int(f.evidence["last_as_good"].split(" in ")[1][:4])
+            assert ref_season <= d.season - 3
+    assert any("since" in f.text for f in facts if f.kind in ("streak", "start"))
+
+
+def test_a_record_beyond_the_data_is_not_claimed(loaded):
+    wh, _, _ = loaded
+    # a striker with far more goals than anyone in the data at this stage: the last time
+    # anyone did it is before 2023/24 (or never) - no "most since" tweet
+    team = sorted(wh.read("core.team_matches", None, {"season": 2026, "team_id": 1}),
+                  key=lambda r: r["kickoff_utc"])
+    wh.append("core.player_matches", [_row(m, 1, "EPL Team 01", 5, pid=999777) for m in team])
+    facts = find_facts(Data(wh, None, TODAY))
+    assert not [f for f in facts if f.kind == "pace" and f.entity == "Joao Test"]

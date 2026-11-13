@@ -37,6 +37,11 @@ rewrites when several things change, and honest feedback over encouragement.
   keeper saves. `rebuild` fills the history from raw.
 - **New tweet patterns**: player_streak, pace, performance (hat-tricks, 3+ assists,
   goalkeeping), leader (players and teams, incl. set-piece goals); shot-stopping in `luck`.
+- **"Since" claims (owner's request)**: a record names the most recent season *in the data*
+  when the same level was reached ("since X had 9 in 2022/23"); if nobody in the data
+  reached it, no claim (`tweets.last_reached`). Before, "the most since 2020/21" only meant
+  "since our data starts". Also fixed: `overtake` now also needs the *current* club to start
+  after the data does (his tally there could be short).
 - **Quality fixes**: punch lines per meaning; "their longest since" needs 3 seasons in the
   league (promoted Hull City); a promoted team's first clean sheet says "this season, at the
   Nth attempt"; `start` needs 3 past seasons; at most 30% of the drafts from one pattern.

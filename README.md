@@ -157,12 +157,12 @@ Ten fact patterns, each run over every team and player:
 |---|---|---|
 | `contrast` | team | top 3 for one stat, bottom 5 for its partner (shots vs conversion, xG vs goals...) |
 | `streak` | team | droughts that just ended; unbeaten / winning / winless / losing / scoring runs |
-| `start` | team | best or worst start after N matches vs their last 3+ seasons |
+| `start` | team | best or worst start after N matches since a season 3+ years ago |
 | `luck` | team, player | goals vs xG, points vs xPts, shot-stopping (conceded vs xGOT against), finishing |
 | `preview` | fixture | head-to-head runs before next week's matches |
 | `overtake` | player | a scorer passes his league tally for a previous club |
 | `player_streak` | player | scored (or scored/assisted) in N appearances in a row |
-| `pace` | player | most goals / assists / goal involvements after N team matches since 2020/21 |
+| `pace` | player | most goals / assists / goal involvements after N team matches since someone last had as many |
 | `performance` | player | last matchday: hat-tricks, 3+ assists, goalkeeping (goals prevented on xGOT) |
 | `leader` | player, team | season leader with a clear gap (25% and 3 ahead): chances created, big chances, xA, dribbles, tackles, interceptions, goals prevented; teams: big chances missed, set-piece goals |
 
@@ -173,7 +173,13 @@ days is not drafted again; drafts over 280
 characters as X counts them (emoji = 2) are dropped.
 
 Rules that keep the numbers true:
-- "since 2020/21" comes from the data (first season loaded for that league), never "ever".
+- **A "since" claim names a season when it really happened.** "The most since X had 9 in
+  2022/23", "their best start since 2021/22 (20 then)", "their longest since 2023/24": the
+  named season is the most recent one in the data in which the same level was reached, and
+  nobody has reached it since. If nobody in the data reached it, the last time is before
+  2020/21 (or never) and is unknown: no claim is made. A tweet never says "since 2020/21"
+  only because the data starts there; counts bounded by the data start ("his 5th hat-trick
+  since 2020/21") and "for the first time in our data" are not used either.
 - A run that goes back to the first match in the data is not tweeted: its real length is unknown.
 - Season xG, xG against and expected points are FotMob's league-table figures, used only when
   the table counts as many matches as the results do.
@@ -185,8 +191,8 @@ Rules that keep the numbers true:
   that season: those players are left out of season totals and `overtake`, and a `pace`
   record must beat a total from such a team-season by 2, not 1.
 - A leader stat waits until its column is loaded for every match of the season (`rebuild`).
-- "Their longest run since 2020/21" needs 3 seasons of the team in the league; a promoted team
-  gets "for the first time this season, at the Nth attempt" instead.
+- "Their best/worst start since S" needs S at least 3 seasons ago. A promoted team's first
+  clean sheet or win says "for the first time this season, at the Nth attempt".
 - Each punch line belongs to one meaning ("Hard to beat" only on unbeaten runs, "Wasteful"
   only where chances were missed).
 - An xG "start" compares only seasons whose first matches all have their details.
