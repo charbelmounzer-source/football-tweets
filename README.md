@@ -52,7 +52,10 @@ up where it stopped.
 3. **Tweet drafts** — the best 25 facts across the 5 leagues go to `football_tweets.drafts`
    and to the run's summary page on GitHub.
 
-Once the history is loaded a day costs about 100 requests (3 minutes) in season. Only what
+Once the history is loaded a day costs about 100 requests (3 minutes) in season. On BigQuery,
+new matches are appended (free load jobs); only matches already stored are deleted and
+rewritten, one season at a time, so a day scans little (a DELETE is billed by the bytes it
+scans). Only what
 changed is rewritten: one league-season, or the matches touched. A failed request is retried
 (15 s, 30 s, 60 s); a league that stays down is skipped and reported, the others load. An
 answer that is empty, for another season, or has lost results is refused and the previous

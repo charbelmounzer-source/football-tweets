@@ -379,3 +379,64 @@ def test_silent_fotmob_changes_fail_the_run(loaded):
                                                    "away_team_id", "away_team")} | {"status": "postponed"}
                                 for m in gone])
     assert status()["F3"] == "error"
+
+
+class CountingWarehouse(SQLiteWarehouse):
+    """Records which tables are written with a DELETE (replace) and which are appended."""
+    def __init__(self, path):
+        super().__init__(path)
+        self.replaced, self.appended = Counter(), Counter()
+
+    def replace(self, table, rows, where):
+        self.replaced[table] += 1
+        super().replace(table, rows, where)
+
+    def append(self, table, rows):
+        self.appended[table] += 1
+        super().append(table, rows)
+
+
+def no_duplicates(w):
+    for t, key in (("core.team_stats", ("match_id", "team_id")),
+                   ("core.player_matches", ("match_id", "player_id")),
+                   ("core.shots", ("shot_id",)), ("raw.match", ("match_id",))):
+        n = Counter(tuple(r[k] for k in key) for r in w.read(t, list(key)))
+        assert max(n.values()) == 1, t
+
+
+def test_new_matches_are_appended_not_deleted_first(tmp_path):
+    """BigQuery bills a DELETE by scanning the table: on 13 Nov 2026 deleting before every
+    batch of new matches used up the project's daily query quota. New matches are appended."""
+    w = CountingWarehouse(str(tmp_path / "w.db"))
+    w.ensure()
+    pipeline.update(w, FakeFotMob(NOW), now=NOW, log=quiet)
+    for t in ("raw.match", "core.team_stats", "core.player_matches", "core.shots"):
+        assert w.replaced[t] == 0 and w.appended[t] > 0, t
+    no_duplicates(w)
+    # next day: recent matches are checked again and the changed ones rewritten in place
+    w.replaced.clear()
+    later = NOW + timedelta(days=1)
+    client = FakeFotMob(later)
+    mid = FIRST_EPL + 90                                    # a match of the last round
+    def changed(p):
+        p["content"]["playerStats"][next(iter(p["content"]["playerStats"]))]["stats"][0]["stats"][
+            "title of rating_title"]["stat"]["value"] = 9.9
+        return p
+    client.tweak[("match", mid)] = changed
+    pipeline.update(w, client, now=later, log=quiet)
+    assert w.replaced["raw.match"] >= 1 and w.replaced["core.player_matches"] >= 1
+    no_duplicates(w)
+
+
+def test_a_batch_left_half_written_is_rewritten_not_duplicated(tmp_path):
+    """A run that stops after writing a batch's team rows but before raw.match: the next run
+    downloads those matches again and must replace the leftovers, not add to them."""
+    w = SQLiteWarehouse(str(tmp_path / "w.db"))
+    w.ensure()
+    pipeline.update(w, FakeFotMob(NOW), now=NOW, log=quiet)
+    gone = [r["match_id"] for r in w.read("raw.match", ["match_id"], {"season": 2025})][:7]
+    w.replace("raw.match", [], {"match_id": gone})          # as if the run stopped before raw.match
+    client = FakeFotMob(NOW)
+    pipeline.update(w, client, now=NOW, log=quiet)
+    assert sorted(c[1] for c in client.calls if c[0] == "match") == sorted(gone)
+    no_duplicates(w)

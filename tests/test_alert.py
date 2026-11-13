@@ -38,3 +38,10 @@ def test_bigquery_and_unknown_errors_and_an_empty_log(tmp_path):
     alert.main(["--log", str(tmp_path / "missing.log"), "--out", str(out), "--run-url", URL])
     text = out.read_text(encoding="utf-8")
     assert text.startswith("Daily update failed") and "before the pipeline started" in text
+
+
+def test_the_daily_query_quota_is_named():
+    log = ("google.api_core.exceptions.BadRequest: 400 GET https://bigquery.googleapis.com/...: "
+           "Custom quota exceeded: Your usage exceeded the custom quota for QueryUsagePerDay")
+    title, body = alert.describe(log)
+    assert "BigQuery daily query limit reached" in title and "08:00 UTC" in body

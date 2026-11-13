@@ -125,7 +125,10 @@ Say so plainly when it matters; do not assume these work.
   benefits). Counted for the team that benefits; if wrong, the score check fails and that
   match's goals become NULL - safe, but read `status` / NULL goals per season once loaded.
 
-- **FotMob's tolerance** over months of daily runs. 2,000 requests in one run worked (12 Nov).
+- **FotMob's tolerance** over months of daily runs. 5,000 requests in one run worked (13 Nov).
+- **How much BigQuery the pipeline uses per day** after the 13 Nov fix, and what the project's
+  daily query quota is set to (Google Cloud console: IAM & Admin > Quotas, "Query usage per
+  day"). Read once from INFORMATION_SCHEMA.JOBS when convenient.
 - **Postponed matches**: none seen. The status is derived from time (kick-off passed 48 h ago,
   no result), not from a FotMob field.
 - **The cancelled Rayo Vallecano v Athletic Club** is listed with kick-off 2026-12-09 although
@@ -249,3 +252,10 @@ python -m football <command> --backend sqlite --db try.db      # local file inst
   requests in a row, prints each error, log streams live.
 - The rewrite once dropped the `truststore` hook. It is in `football/fotmob.py`.
 - BigQuery sandbox (no billing) cannot run this: no DML, tables expire after 60 days.
+- **BigQuery bills a DELETE by scanning the table.** On 13 Nov the history load deleted before
+  every batch of 100 new matches, scanning raw.match (all stored answers, >1 GB) each time:
+  tens of GB per run, and the 5th run of the day failed on the project's daily query quota
+  ("Custom quota exceeded ... QueryUsagePerDay"). Fixed: new matches are appended (load jobs
+  are free); only matches that already have rows are deleted and rewritten, one season at a
+  time (clustering on season limits the scan). Think of the bytes scanned before adding a
+  query that runs per batch or per day.
