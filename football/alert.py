@@ -37,6 +37,12 @@ CAUSES = [
      "A data check failed",
      "The data was downloaded but a quality check found an error, so no tweets were drafted "
      "(nothing wrong is posted). The failing checks are listed below."),
+    (r"quota exceeded|Quota exceeded|QueryUsagePerDay",
+     "BigQuery daily query limit reached",
+     "BigQuery refused more queries today: the project's daily query quota (a cost limit set in "
+     "Google Cloud) is used up. Nothing wrong was loaded; the next run continues where this one "
+     "stopped. The limit resets at midnight Pacific time (08:00 UTC in winter). If it happens "
+     "on a normal day, the pipeline is reading or deleting more than it should: worth a look."),
     (r"google\.|bigquery|BigQuery|Forbidden: 403|NotFound: 404|BadRequest: 400|Unauthorized|"
      r"credentials|DefaultCredentialsError",
      "BigQuery problem",

@@ -71,23 +71,47 @@ def load_leagues(wh, season, items, now, errors):
     return loaded
 
 
-def load_matches(wh, items, now):
-    """items: [(match row, slim answer, problem or None)]. Replaces those matches' details.
-    A match with a problem keeps its raw row (so it is not asked again) but gets no table rows."""
+def load_matches(wh, items, now, known=()):
+    """items: [(match row, slim answer, problem or None)]. Writes those matches' details.
+    A match with a problem keeps its raw row (so it is not asked again) but gets no table rows.
+
+    BigQuery bills a DELETE by scanning the table, and raw.match holds every stored answer
+    (over 1 GB): deleting for matches that have no rows yet cost tens of GB per run and hit
+    the project's daily query quota on 13 Nov 2026. So:
+      - a match with no rows anywhere (new, or loading the history) is appended: load jobs
+        are free;
+      - a match that has rows (known: re-checked recent matches; or rows left by a run that
+        stopped half-way) is deleted and rewritten, one season at a time, so the clustering
+        on season limits what BigQuery scans."""
     if not items:
         return
     ids = [m["match_id"] for m, _s, _p in items]
-    raw, rows = [], {t: [] for t in MATCH_TABLES}
+    # team_stats is written first, so a run that stopped half-way left rows there if anywhere
+    leftovers = {r["match_id"] for r in wh.read("core.team_stats", ["match_id"], {"match_id": ids})}
+    existing = (set(known) & set(ids)) | leftovers
+    raw, rows = {}, {}
     for m, slim, problem in items:
-        raw.append({"match_id": m["match_id"], "league": m["league"], "season": m["season"],
-                    "fetched_at": now.strftime(DT), "sha": digest(slim), "problem": problem,
-                    "payload": json.dumps(slim, ensure_ascii=False)})
+        key = (m["match_id"] in existing, m["season"])
+        raw.setdefault(key, []).append({
+            "match_id": m["match_id"], "league": m["league"], "season": m["season"],
+            "fetched_at": now.strftime(DT), "sha": digest(slim), "problem": problem,
+            "payload": json.dumps(slim, ensure_ascii=False)})
+        group = rows.setdefault(key, {t: [] for t in MATCH_TABLES})
         if not problem:
             for t, new in model_match(m, slim).items():
-                rows[t] += new
-    for t in MATCH_TABLES:
-        wh.replace(f"core.{t}", rows[t], {"match_id": ids})
-    wh.replace("raw.match", raw, {"match_id": ids})          # last: marks the matches as done
+                group[t] += new
+    for (replace, season), group in rows.items():
+        group_ids = [r["match_id"] for r in raw[(replace, season)]]
+        for t in MATCH_TABLES:
+            if replace:
+                wh.replace(f"core.{t}", group[t], {"season": season, "match_id": group_ids})
+            else:
+                wh.append(f"core.{t}", group[t])
+    for (replace, season), new in raw.items():                # last: marks the matches as done
+        if replace:
+            wh.replace("raw.match", new, {"season": season, "match_id": [r["match_id"] for r in new]})
+        else:
+            wh.append("raw.match", new)
 
 
 def record_run(wh, command, s, started, now):
@@ -110,7 +134,7 @@ def update(wh, client, today=None, now=None, leagues=None,
     s = {"requests": 0, "leagues_loaded": 0, "matches_new": 0, "matches_refreshed": 0,
          "matches_backfilled": 0, "matches_unchanged": 0, "matches_waiting": 0,
          "history_left": 0, "errors": [], "season": season}
-    batch = []
+    batch, known = [], {}
     try:
         # ---- 1. league data: current season always, missing past seasons once
         have = {(r["league_code"], r["season"]) for r in wh.read("raw.league", ["league_code", "season"])}
@@ -204,12 +228,12 @@ def update(wh, client, today=None, now=None, leagues=None,
             s[f"matches_{kind}"] += 1
             s["history_left"] -= kind == "backfilled"
             if len(batch) >= BATCH:
-                load_matches(wh, batch, now)
+                load_matches(wh, batch, now, known)
                 batch.clear()
     except BudgetSpent:
         log(f"  request cap reached ({client.max_requests}): the next run continues")
     finally:
-        load_matches(wh, batch, now)
+        load_matches(wh, batch, now, known)
         s["requests"] = client.used
         record_run(wh, "update", s, started, now)
     log(f"  done: {s['requests']} requests, {s['matches_new']} new matches, "
