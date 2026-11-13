@@ -140,11 +140,52 @@ Say so plainly when it matters; do not assume these work.
 3. **More material from FotMob** if wanted: xG open play vs set play (columns exist, not
    tweeted), per-90 leaders, physical metrics (distance, sprints: only some matches have them),
    shot situations beyond set pieces (fast breaks), player ratings (column exists).
-4. **Auto-posting to X.** `football_tweets.drafts` already has `status`, `posted_at`,
+4. **Failure alerts (owner wants this, before auto-posting).** See "Failure alerts" below.
+5. **Auto-posting to X.** `football_tweets.drafts` already has `status`, `posted_at`,
    `tweet_id`. Nothing posts yet. Needs an approval step first. The owner said not now.
-5. **A fallback for results.** One unofficial site is still the weak point. football-data.co.uk
-   (CSV, results and shots, no xG) or football-data.org (official API, results) could keep the
-   results-only tweets alive if FotMob closes. Not built; the owner chose one source for now.
+6. **Backup source, only if FotMob has a problem.** See "If FotMob breaks" below. Not to be
+   built now (owner, 13 Nov): kept as the plan.
+
+## Failure alerts (to do, owner's request of 13 Nov)
+
+Goal: the owner checks about once a week; anything wrong must reach him without looking.
+What exists: a run stops before drafting on stale data (F1, 36 h) or a check error, and a bad
+FotMob answer never replaces good data. What is missing: telling him. Today a failure is only a
+red run in Actions, and GitHub emails failed *scheduled* runs only to whoever last edited the
+schedule. To build:
+- A clear failure message when the daily job fails (email or a message app), saying which
+  step failed and why: FotMob not answering / answering in another format (field moved,
+  new header or token, HTTP 403/429), a check error, BigQuery error.
+- A "silent" alarm too: no successful run for 36 h, or a run that downloaded nothing new on a
+  matchday, or a sudden drop in fields found (FotMob changed something without failing).
+- When posting exists: posting pauses by itself on any of these, and the alert says so.
+- Ask the owner which channel he wants before building (email is simplest from GitHub Actions).
+
+## If FotMob breaks (risk and backup plan, discussed 13 Nov)
+
+FotMob has no official API: we read the JSON its website loads; its terms forbid automated
+retrieval. It changed before (2024: a required `x-fm-req` header broke the soccerdata library
+for about a month); data-centre IPs get occasional 403/429. Likely breaks and fixes: a field
+moved (fix in `model.py`, under an hour); a new header/token (hours to weeks); GitHub's IPs
+blocked (run from another machine); endpoints closed (switch source). The raw copies in
+`football_raw` keep the whole history whatever happens.
+
+Backup source if needed: **Sportmonks** (licensed API; on 13 Nov roughly €29/month for five
+leagues plus an xG add-on from €15/month: check current prices; try its free trial first:
+coverage of the five leagues, xG and player stats, history depth). Cheaper without confirmed xG:
+API-Football (~$16-39/month). Free results-only backup: football-data.org.
+
+How to switch without losing the FotMob history (estimated 3-5 days of work):
+- Keep FotMob ids as the house ids; link the new source's ids through mapping tables.
+- Teams (~170 since 2010): automatic name match plus a short manual table.
+- Matches: league + date (±1 day) + both teams, confirmed by the final score.
+- Players: matched inside each linked match (~14 per team: name, shirt number, minutes),
+  linked once consistent over several matches; doubtful ones listed, never guessed. Only
+  players active on both sides of the switch need a link. Unlinked = unknown = no tweet.
+- Run both sources side by side for a few weeks (or load 1-2 recent seasons from the new one)
+  to build the links, report linked / doubtful, then switch the daily feed.
+- A new xG model (Sportmonks vs Opta via FotMob) starts a new xG era: xG records never mix
+  the two. Goals, results, cards agree between sources; assists can differ slightly.
 
 ## Owner's machine
 
