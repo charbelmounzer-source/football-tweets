@@ -160,6 +160,8 @@ Things to know about the data:
 | M1 | error | a match id present twice, or in both `matches` and `fixtures` |
 | M2 | error | a played match without exactly 2 team rows |
 | S1 | warn | FotMob's league table disagrees with the results (played, points) |
+| F2 | error | recent matches (last 7 days) suddenly without xG or player minutes: FotMob changed its format without failing |
+| F3 | error | more than 10 matches past kick-off (2+ days) still without a result: FotMob stopped updating results |
 | H1 | error | a league-season (any season) lists fewer matches than teams × (teams − 1) |
 | H2 | error | a finished season with less than 98% of its matches played (except `SHORT_SEASONS`), or, from 2016/17, less than 98% of its downloaded matches with player stats |
 | H3 | warn | a played match (2+ days old) whose details are not downloaded yet (expected while the history loads) |
@@ -178,6 +180,23 @@ league-seasons, played matches, how many have details. A match FotMob has no det
 (two since 2020/21 on 13 Nov 2026) is accepted: below 2% of a season it is not a hole.
 `python -m football status` shows the same per league-season (data era, teams, expected,
 played, details, unusable, no xG, coverage, to load).
+
+## Alerts
+
+When the daily run fails, the workflow opens an issue labelled `daily-failure`, **assigned to
+the repository owner**, so GitHub emails him (and notifies the GitHub app). The issue says in
+plain words what happened, from the run's log (`football/alert.py`): FotMob refusing our
+requests (403/429), FotMob answering in another format, FotMob not answering, unexpected league
+data, a failed data check (listed, with what it means), a BigQuery problem, or an unexpected
+error, with the last relevant log lines and a link to the run. A new failure while the issue is
+open is added as a comment; the first successful run closes it with "Recovered".
+
+A failure is also how a silent change at FotMob reaches you: checks F2 and F3 turn "FotMob
+answers but something is missing" into an error. An error never drafts tweets.
+
+Not covered yet: a run that never starts (GitHub pauses scheduled workflows after 60 days
+without repository activity, or an Actions outage). A free "dead man's switch" service
+(healthchecks.io) can email when no successful run has checked in for 30 hours: see CLAUDE.md.
 
 ## Tweet drafts
 
