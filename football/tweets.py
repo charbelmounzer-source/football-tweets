@@ -906,15 +906,22 @@ def gen_pace(d, lg):
                 season, pid, tid = key
                 other = at(key, n)[metric]
                 # a team-season with a match FotMob has no details for may hide a goal
-                rivals.append((other + (1 if d.hole(tid, season) else 0), season, pid))
-            top = max(rivals, default=(0, None, None))
-            if v <= top[0]:
+                rivals.append((other + (1 if d.hole(tid, season) else 0), other, season, pid))
+            margin, shown, *who = max(rivals, default=(0, 0, None, None))
+            if v <= margin:
                 continue
-            prev = (f" (previous best: {top[0]}, {names.get(top[2], '?')} in {season_label(top[1])})"
-                    if top[1] is not None else "")
+            top = (shown, *who)
+            if top[1] is None:
+                prev = ""
+            elif top[1] == d.season:                  # a rival this season, not a past record
+                prev = f" (next best: {names.get(top[2], '?')}, {top[0]})"
+            elif top[2] == p["player_id"]:
+                prev = f" (his own previous best: {top[0]} in {season_label(top[1])})"
+            else:
+                prev = f" (previous best: {top[0]}, {names.get(top[2], '?')} in {season_label(top[1])})"
             text = (f"📈 {p['player']} has {v} {lg} {words} after {n} matches of the season - the "
                     f"most by any {lg} player at this stage since {d.since(lg)}{prev}.")
-            f = Fact("pace", lg, p["player"], text, rarity=9 + min(v - top[0], 4) / 2,
+            f = Fact("pace", lg, p["player"], text, rarity=9 + min(v - margin, 4) / 2,
                      evidence={"metric": metric, "value": v, "team_matches": n,
                                "previous_best": top[0],
                                "previous_best_by": f"{names.get(top[2], '?')} {season_label(top[1])}"

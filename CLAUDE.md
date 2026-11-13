@@ -99,8 +99,9 @@ Say so plainly when it matters; do not assume these work.
 
 ## Next steps, in order
 
-1. **Merge the branch, then run `Daily update` once with rebuild ticked.** Remove
-   `.github/workflows/probe.yml` and `scripts/probe.py` before merge if still there.
+1. **Merge the branch, then run `Daily update` once with rebuild ticked** (~10 minutes more
+   than a normal run). Tried on a copy of the real data on 13 Nov: 11,233 matches re-modelled,
+   every new column filled, 14 checks, 0 errors.
 2. **Tweet quality, with the owner's examples.** He will bring tweets he likes from X; turn
    each into a pattern or a wording rule. Read the drafts of a few days first.
 3. **More material from FotMob** if wanted: xG open play vs set play (columns exist, not
@@ -140,7 +141,8 @@ python -m football <command> --backend sqlite --db try.db      # local file inst
   workflow run saves. It **can** push a branch and read workflow logs through the GitHub API.
   To see real data: a temporary workflow on the branch (trigger `push`, secret `GCP_SA_KEY`)
   that **reads** BigQuery, copies raw.* into SQLite on the runner, runs `rebuild`, checks and
-  tweets there and prints to the log (done on 13 Nov: `scripts/probe.py`). Never write to
+  tweets there and prints to the log (done on 13 Nov; see the branch history of
+  `scripts/probe.py`). Never write to
   the real project from a branch. Remove the workflow before merge.
 
 ## Lessons
