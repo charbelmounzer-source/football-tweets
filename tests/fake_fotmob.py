@@ -156,18 +156,45 @@ class FakeFotMob:
         if m is None:
             return None
         h, a = m["home"], m["away"]
+        extra = random.Random(m["id"] + 7)          # separate stream: the scores above stay as they were
         player_stats, lineup, events = {}, {}, []
         for key, side in (("homeTeam", h), ("awayTeam", a)):
-            for p in side["players"]:
+            opp = a if side is h else h
+            assists = {}
+            for p in side["players"]:                       # most goals get an assist
+                for _ in range(p["goals"]):
+                    if extra.random() < 0.7:
+                        giver = side["players"][extra.choice([5, 6, 7, 8, 9, 10])]
+                        if giver is not p:
+                            assists[giver["id"]] = assists.get(giver["id"], 0) + 1
+            for n, p in enumerate(side["players"]):
+                keeper = n == 0
                 top = {"rating_title": 6.5, "minutes_played": p["minutes"], "goals": p["goals"],
-                       "assists": 0}
-                attack = {"touches": 40}
+                       "assists": assists.get(p["id"], 0)}
+                attack = {"touches": 40, "touches_opp_box": extra.randint(0, 6) if n >= 5 else 0}
+                defence = {"matchstats.headers.tackles": extra.randint(0, 4),
+                           "recoveries": extra.randint(1, 8), "interceptions": extra.randint(0, 3)}
                 if p["shots"]:                              # like FotMob: zero stats are left out
                     top.update(total_shots=p["shots"], expected_goals=p["xg"], ShotsOnTarget=p["sot"])
                     attack["expected_goals_non_penalty"] = p["xg"]
+                if n >= 5:
+                    attack["big_chance_created_team_title"] = extra.choice([0, 0, 0, 1, 1, 2])
+                    attack["dribbles_succeeded"] = [extra.randint(0, 4), 5]
+                    attack["expected_assists"] = round(extra.uniform(0, 0.4), 2)
+                    attack["chances_created"] = extra.randint(0, 4)
+                groups = [stat_group("top_stats", {k: v for k, v in top.items() if v != 0 or k == "goals"}),
+                          stat_group("attack", {k: v for k, v in attack.items() if v != 0}),
+                          stat_group("defense", {k: v for k, v in defence.items() if v != 0})]
+                if keeper:
+                    on_target = sum(x["isOnTarget"] for x in opp["shots"])
+                    faced = round(sum(x["expectedGoalsOnTarget"] for x in opp["shots"]), 2)
+                    groups.append(stat_group("goalkeeping", {
+                        "saves": max(on_target - opp["goals"], 0), "goals_conceded": opp["goals"],
+                        "expected_goals_on_target_faced": faced,
+                        "goals_prevented": round(faced - opp["goals"], 2)}))
                 player_stats[str(p["id"])] = {
                     "name": p["name"], "id": p["id"], "teamId": p["teamId"], "teamName": side["name"],
-                    "isGoalkeeper": False, "stats": [stat_group("top_stats", top), stat_group("attack", attack)],
+                    "isGoalkeeper": keeper, "stats": groups,
                     "shotmap": [s for s in side["shots"] if s["playerId"] == p["id"]], "funFacts": []}
                 events += [{"type": "Goal", "time": 10, "overloadTime": None, "isHome": side is h,
                             "ownGoal": None, "goalDescription": None, "nameStr": p["name"],
@@ -188,10 +215,14 @@ class FakeFotMob:
                 both("total_shots", lambda s: len(s["shots"])),
                 both("ShotsOnTarget", lambda s: sum(x["isOnTarget"] for x in s["shots"])),
                 both("big_chance", lambda s: 2), both("corners", lambda s: 5),
+                both("big_chance_missed_title", lambda s: 1),
+                both("keeper_saves", lambda s: 3),
                 {"key": "accurate_passes", "stats": ["438 (87%)", "347 (85%)"]}]},
             {"key": "expected_goals", "stats": [
                 {"key": "expected_goals", "stats": [None, None], "type": "title"},
                 both("expected_goals_non_penalty", lambda s: f"{s['xg']:.2f}"),
+                both("expected_goals_open_play", lambda s: f"{s['xg'] * 0.8:.2f}"),
+                both("expected_goals_set_play", lambda s: f"{s['xg'] * 0.2:.2f}"),
                 both("expected_goals_on_target", lambda s: f"{s['xg']:.2f}")]}]
         payload = {
             "general": {"matchId": str(m["id"]), "leagueId": config.FOTMOB_IDS[m["code"]],

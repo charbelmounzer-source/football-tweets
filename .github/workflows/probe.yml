@@ -17,3 +17,4 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
       - run: python scripts/probe.py
+        timeout-minutes: 60

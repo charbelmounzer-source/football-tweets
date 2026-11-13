@@ -15,6 +15,10 @@ on:
       top:
         description: "Number of tweet drafts"
         default: "25"
+      rebuild:
+        description: "First re-make every core table from the stored FotMob answers (no download; needed once after new columns)"
+        type: boolean
+        default: false
 
 concurrency:
   group: daily-update              # never two runs at once: FotMob must not be hit in parallel
@@ -40,6 +44,9 @@ jobs:
       - uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - name: Rebuild core tables from raw (no download)
+        if: ${{ inputs.rebuild }}
+        run: python -m football rebuild
       - name: Update, check, draft
         run: |
           python -m football daily --md drafts.md \

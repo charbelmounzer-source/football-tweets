@@ -229,6 +229,29 @@ def stat(p, key, cast=float):
     return num(v[0] if isinstance(v, list) else v, cast)
 
 
+# player counts FotMob leaves out when they are zero: column -> FotMob key. For "won" stats
+# FotMob gives [won, attempted]; the first number is kept.
+OUTFIELD_COUNTS = {
+    "big_chances_created": "big_chance_created_team_title", "big_chances_missed": "big_chance_missed_title",
+    "touches_in_box": "touches_opp_box", "dribbles": "dribbles_succeeded",
+    "tackles": "matchstats.headers.tackles", "interceptions": "interceptions",
+    "recoveries": "recoveries", "duels_won": "duel_won", "aerials_won": "aerials_won",
+    "passes_final_third": "passes_into_final_third",
+}
+
+
+def keeper_stats(p, zero):
+    """Goalkeeping columns: NULL for outfield players. xGOT faced and goals prevented are left
+    NULL when FotMob does not give them (a keeper who faced no shot on target)."""
+    if not p.get("goalkeeper"):
+        return {"saves": None, "goals_conceded": None, "xgot_faced": None, "goals_prevented": None}
+    saves, conceded = stat(p, "saves", int), stat(p, "goals_conceded", int)
+    return {"saves": zero if saves is None else saves,
+            "goals_conceded": zero if conceded is None else conceded,
+            "xgot_faced": stat(p, "expected_goals_on_target_faced"),
+            "goals_prevented": stat(p, "goals_prevented")}
+
+
 def model_match(match, slim):
     """match: the row of core.matches for this match (gives league, season, date, team names)."""
     keys = {k: match[k] for k in ("match_id", "league", "season", "season_label", "date", "kickoff_utc")}
@@ -267,13 +290,17 @@ def model_match(match, slim):
     xgot, n_shots, sot = pair("expected_goals_on_target"), pair("total_shots", int), pair("ShotsOnTarget", int)
     big, poss = pair("big_chance", int), pair("BallPossesion", int)
     corners, box = pair("corners", int), pair("touches_opp_box", int)
+    big_missed, saves = pair("big_chance_missed_title", int), pair("keeper_saves", int)
+    xg_open, xg_set = pair("expected_goals_open_play"), pair("expected_goals_set_play")
     team_stats = []
     for tid, opp in ((home_id, away_id), (away_id, home_id)):
         team_stats.append(dict(
             keys, team_id=tid, team=names[tid], home_away=side_of[tid], xg=xg[tid], xga=xg[opp],
             npxg=npxg[tid], npxga=npxg[opp], xgot=xgot[tid], shots=n_shots[tid],
             shots_on_target=sot[tid], shot_goals=int(by_team[tid]["goals"]) if has_shots else None,
-            big_chances=big[tid], possession=poss[tid], corners=corners[tid], touches_in_box=box[tid]))
+            big_chances=big[tid], possession=poss[tid], corners=corners[tid], touches_in_box=box[tid],
+            big_chances_missed=big_missed[tid], xg_open_play=xg_open[tid], xg_set_play=xg_set[tid],
+            keeper_saves=saves[tid]))
 
     yellow, red = {}, {}
     for e in slim["cards"]:
@@ -311,6 +338,8 @@ def model_match(match, slim):
             xgot=or_zero(stat(p, "expected_goals_on_target_variant"), zero_f),
             xa=or_zero(stat(p, "expected_assists"), zero_f),
             key_passes=or_zero(stat(p, "chances_created", int)), touches=stat(p, "touches", int),
-            yellow=yellow.get(pid, 0), red=red.get(pid, 0), rating=stat(p, "rating_title"))
+            yellow=yellow.get(pid, 0), red=red.get(pid, 0), rating=stat(p, "rating_title"),
+            **{col: or_zero(stat(p, key, int)) for col, key in OUTFIELD_COUNTS.items()},
+            **keeper_stats(p, zero))
     return {"team_stats": team_stats, "player_matches": list(players.values()),
             "shots": list(shots.values())}

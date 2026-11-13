@@ -81,7 +81,8 @@ def test_season_xg_and_xpts_are_the_league_table_figures(loaded):
 
 def test_facts_that_need_every_match_are_off_while_details_are_missing(loaded):
     wh, _, _ = loaded
-    wh.replace("core.team_stats", [], {"match_id": FIRST_EPL})          # one EPL match of this season
+    for t in ("core.team_stats", "core.player_matches", "raw.match"):   # one EPL match not downloaded
+        wh.replace(t, [], {"match_id": FIRST_EPL})
     d = Data(wh, None, TODAY)
     assert d.complete["Premier League"] is False and d.complete["La Liga"] is True
     assert not d.history_complete and d.history_missing == 1
@@ -93,10 +94,10 @@ def test_facts_that_need_every_match_are_off_while_details_are_missing(loaded):
                 and "conversion" in f.fact_id]
     lines = []
     tweets.draft(wh, TODAY, log=lines.append)
-    assert any("overtake) are off: 1 played matches since 2023/24" in x for x in lines)
+    assert any("(overtake, pace) are off: 1 played matches since 2023/24" in x for x in lines)
     # a match played yesterday without details is normal, not a hole
     wh2_rows = wh.read("core.team_stats", None, {"match_id": FIRST_EPL + 90})   # last round
-    wh.replace("core.team_stats", [], {"match_id": FIRST_EPL + 90})
+    wh.replace("raw.match", [], {"match_id": FIRST_EPL + 90})
     assert wh2_rows and Data(wh, None, TODAY).history_missing == 1
 
 
@@ -145,12 +146,33 @@ def test_overtake_exact_tallies(loaded):
     assert f.evidence["goals_for_club"] == 6 and f.evidence["before_match"] == 5
 
 
-def test_overtake_skipped_when_a_match_of_the_history_has_no_details(loaded):
+def _make_unusable(wh, match_id):
+    """As if FotMob had no details for this match: raw row with a problem, no detail rows."""
+    raw = wh.read("raw.match", None, {"match_id": match_id})[0]
+    for t in ("core.team_stats", "core.player_matches", "core.shots"):
+        wh.replace(t, [], {"match_id": match_id})
+    wh.replace("raw.match", [dict(raw, problem="no player stats")], {"match_id": match_id})
+
+
+def test_overtake_skipped_while_a_match_of_the_history_is_not_downloaded(loaded):
     wh, _, _ = loaded
     _add_striker(wh, 2024, 6, [1, 0, 2, 0, 1, 0, 1, 0, 0, 1])
-    wh.replace("core.team_stats", [], {"match_id": 3 * 1_000_000 + 2024 * 1000})   # a 2024/25 Bundesliga match
+    wh.replace("raw.match", [], {"match_id": 3 * 1_000_000 + 2024 * 1000})   # a 2024/25 Bundesliga match
     d = Data(wh, None, TODAY)
     assert not [f for f in find_facts(d) if f.kind == "overtake"] and d.unreliable >= 1
+
+
+def test_a_match_fotmob_cannot_give_only_blocks_the_two_teams_of_that_season(loaded):
+    wh, _, _ = loaded
+    _add_striker(wh, 2024, 6, [1, 0, 2, 0, 1, 0, 1, 0, 0, 1])
+    _make_unusable(wh, 3 * 1_000_000 + 2024 * 1000)               # Bundesliga: nothing to do with him
+    d = Data(wh, None, TODAY)
+    assert d.history_complete and d.holes
+    assert [f for f in find_facts(d) if f.kind == "overtake"]
+    # a match of his old club in the season he played there: his tally there may be short
+    old_club = next(r["match_id"] for r in wh.read("core.team_matches", None, {"season": 2024, "team_id": 403}))
+    _make_unusable(wh, old_club)
+    assert not [f for f in find_facts(Data(wh, None, TODAY)) if f.kind == "overtake"]
 
 
 def test_overtake_skipped_when_player_was_at_old_club_before_our_data(loaded):
@@ -170,3 +192,65 @@ def test_league_articles_and_runs_older_than_the_data(loaded):
     for f in facts:
         if f.kind == "streak" and "run" in f.evidence:
             assert f.evidence["length"] < len(d.team_seq[(f.league, f.team_id)])
+
+
+# ---------------------------------------------------------------- new patterns (13 Nov 2026)
+def test_new_player_patterns_find_something_and_numbers_are_true(loaded):
+    wh, _, _ = loaded
+    d = Data(wh, None, TODAY)
+    facts = find_facts(d)
+    kinds = {f.kind for f in facts}
+    assert {"player_streak", "pace", "performance", "leader"} <= kinds
+    rows_of = {}
+    for p in d.pm:
+        rows_of.setdefault((p["league"], p["player_id"]), []).append(p)
+    for f in facts:
+        if f.kind == "player_streak":
+            pid = int(f.fact_id.split("|")[3])
+            rows = rows_of[(f.league, pid)]
+            n = f.evidence["appearances"]
+            test = (lambda p: (p["goals"] or 0) > 0) if f.evidence["run"] == "scoring" else \
+                (lambda p: (p["goals"] or 0) + (p["assists"] or 0) > 0)
+            assert all(test(p) for p in rows[-n:])
+            assert len(rows) == n or not test(rows[-n - 1])          # the run starts exactly there
+            assert f.evidence["goals"] == sum(p["goals"] for p in rows[-n:])
+        if f.kind == "pace":
+            pid = int(f.fact_id.split("|")[3])
+            col = f.evidence["metric"]
+            total = sum((p["goals"] if col in ("goals", "involvements") else 0)
+                        + (p["assists"] if col in ("assists", "involvements") else 0)
+                        for p in rows_of[(f.league, pid)])
+            assert total == f.evidence["value"] > f.evidence["previous_best"]
+        if f.kind == "performance" and f.fact_id.startswith("hat_trick"):
+            assert f.evidence["goals"] >= 3
+
+
+def test_punch_lines_fit_the_stat(loaded):
+    wh, _, _ = loaded
+    for f in find_facts(Data(wh, None, TODAY)):
+        if "Wasteful" in f.text or "clinical" in f.text.lower() and "Need to be" in f.text:
+            assert f.kind in ("contrast", "leader") and ("conversion" in f.fact_id or "goals" in f.fact_id
+                                                         or "big_chances_missed" in f.fact_id)
+        if f.kind == "streak" and "run" in f.evidence:
+            assert any(line in f.text for line in tweets.PUNCH[f.evidence["run"]])
+
+
+def test_no_pattern_fills_the_drafts(loaded):
+    wh, _, _ = loaded
+    chosen = tweets.draft(wh, TODAY, top=20, log=quiet)
+    per_kind = {}
+    for f in chosen:
+        per_kind[f.kind] = per_kind.get(f.kind, 0) + 1
+    assert max(per_kind.values()) <= 6 and len(per_kind) >= 4
+
+
+def test_leaders_wait_for_new_columns_to_be_loaded(loaded):
+    wh, _, _ = loaded
+    leader = lambda: [f for f in find_facts(Data(wh, None, TODAY)) if f.kind == "leader"
+                      and f.league == "La Liga" and f.evidence["stat"] == "big_chances_created"]
+    assert leader()
+    first_la_liga = 1_000_000 + 2026 * 1000
+    rows = wh.read("core.player_matches", None, {"match_id": first_la_liga})
+    wh.replace("core.player_matches", [dict(r, big_chances_created=None) for r in rows],
+               {"match_id": first_la_liga})                  # as before `rebuild` fills the column
+    assert not leader()

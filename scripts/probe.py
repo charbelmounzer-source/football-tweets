@@ -1,61 +1,75 @@
-"""TEMPORARY read-only probe of the real BigQuery data. Removed before merge."""
+"""TEMPORARY real-data trial. Reads BigQuery (read-only), copies raw.* and the draft history
+into a SQLite file, then runs rebuild + checks + tweets there. Removed before merge."""
 import json
+import sys
 from collections import Counter, defaultdict
+from datetime import date
+
 from google.cloud import bigquery
+
+sys.path.insert(0, ".")
+from football import checks, pipeline, tweets          # noqa: E402
+from football.warehouse import SQLiteWarehouse        # noqa: E402
 
 P = "football-model-494509"
 c = bigquery.Client(project=P, location="EU")
+wh = SQLiteWarehouse("trial.db")
+wh.ensure()
 
 
-def q(sql):
-    print("\n### " + " ".join(sql.split())[:140])
-    rows = list(c.query(sql).result())
-    for r in rows:
-        print("  " + " | ".join(str(v) for v in r.values()))
-    return rows
+def copy(table, bq, where=""):
+    rows = [dict(r) for r in c.query(f"SELECT * FROM `{P}.{bq}` {where}").result()]
+    rows = [{k: wh_val(v) for k, v in r.items()} for r in rows]
+    wh.append(table, rows)
+    return len(rows)
 
 
-q(f"""SELECT m.league, m.season, COUNT(DISTINCT m.match_id) played,
-  COUNT(DISTINCT IF(t.team_id IS NOT NULL, m.match_id, NULL)) detailed,
-  COUNT(DISTINCT IF(t.xg IS NOT NULL, m.match_id, NULL)) with_xg,
-  COUNT(DISTINCT IF(s.match_id IS NOT NULL, m.match_id, NULL)) with_shots,
-  COUNT(DISTINCT m.home_team_id) teams
-FROM `{P}.football_core.matches` m
-LEFT JOIN `{P}.football_core.team_stats` t USING (match_id)
-LEFT JOIN (SELECT DISTINCT match_id FROM `{P}.football_core.shots`) s USING (match_id)
-GROUP BY 1,2 ORDER BY 1,2""")
-q(f"""SELECT league, season, status, COUNT(*) FROM `{P}.football_core.fixtures`
- WHERE status != 'upcoming' GROUP BY 1,2,3 ORDER BY 1,2""")
-q(f"""SELECT r.match_id, r.league, r.season, r.problem, m.home_team, m.away_team, m.date
- FROM `{P}.football_raw.match` r LEFT JOIN `{P}.football_core.matches` m USING (match_id)
- WHERE r.problem IS NOT NULL""")
-q(f"""SELECT match_id, league, season, date, kickoff_utc, home_team, away_team, status
- FROM `{P}.football_core.fixtures` WHERE status='cancelled'""")
-q(f"""SELECT league, season, COUNTIF(xg IS NULL) xg_null, COUNTIF(xa IS NULL) xa_null,
- COUNTIF(rating IS NULL) rating_null, COUNTIF(minutes IS NULL) min_null, COUNT(*) n
- FROM `{P}.football_core.player_matches` GROUP BY 1,2 ORDER BY 1,2""")
-q(f"""SELECT league, season, COUNTIF(xgot IS NULL) xgot_null, COUNTIF(big_chances IS NULL) bc_null,
- COUNTIF(possession IS NULL) poss_null, COUNT(*) n FROM `{P}.football_core.team_stats`
- GROUP BY 1,2 ORDER BY 1,2""")
-q(f"""SELECT situation, shot_type, COUNT(*) FROM `{P}.football_core.shots` WHERE season=2026
- GROUP BY 1,2 ORDER BY 3 DESC""")
+def wh_val(v):
+    from datetime import datetime
+    if isinstance(v, datetime):
+        return v.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(v, date):
+        return v.isoformat()
+    return v
 
-# every player-stat key and team-stat key in the slim copies of this season
-keys, tkeys, ex = Counter(), Counter(), {}
-for r in c.query(f"SELECT payload FROM `{P}.football_raw.match` WHERE season=2026 AND problem IS NULL LIMIT 60").result():
-    s = json.loads(r["payload"])
-    for k in s["team_stats"]:
-        tkeys[k] += 1
-    for p in s["players"]:
-        for k, v in p["stats"].items():
-            keys[k] += 1
-            ex.setdefault(k, v)
-print("\n### player stat keys (count in 60 matches, example)")
-for k, n in keys.most_common():
-    print(f"  {k}: {n}  e.g. {ex[k]}")
-print("\n### team stat keys")
-for k, n in tkeys.most_common():
-    print(f"  {k}: {n}")
 
-q(f"""SELECT * FROM `{P}.football_tweets.drafts` WHERE run_date = (SELECT MAX(run_date) FROM `{P}.football_tweets.drafts`) ORDER BY rank""")
-q(f"""SELECT type, COUNT(*) FROM `{P}.football_tweets.drafts` GROUP BY 1""")
+print("raw.league", copy("raw.league", "football_raw.league"))
+for y in range(2020, 2027):
+    print("raw.match", y, copy("raw.match", "football_raw.match", f"WHERE season = {y}"), flush=True)
+print("drafts", copy("tweets.drafts", "football_tweets.drafts"))
+print("runs", copy("core.runs", "football_core.runs"))
+
+print("\n===== rebuild")
+pipeline.rebuild(wh)
+today = date.today()
+print("\n===== checks")
+checks.run_checks(wh, today, pipeline.utcnow())
+print("\n===== coverage")
+for r in checks.coverage(wh, today):
+    print(f"  {r['league']:<16}{r['season']} teams {r['teams']} expected {r['expected']} listed {r['listed']} "
+          f"played {r['played']} details {r['details']} unusable {len(r['unusable'])} no_xg {r['no_xg']}")
+
+print("\n===== null share of new columns (current season)")
+pm = wh.read("core.player_matches", None, {"season": 2026})
+for col in ("tackles", "dribbles", "big_chances_created", "xa", "key_passes", "saves", "goals_prevented",
+            "xgot_faced", "touches_in_box", "interceptions"):
+    print(f"  {col}: {sum(p[col] is None for p in pm)}/{len(pm)} null")
+ts = wh.read("core.team_stats", None, {"season": 2026})
+for col in ("big_chances_missed", "xg_open_play", "xg_set_play", "keeper_saves", "xgot"):
+    print(f"  team {col}: {sum(t[col] is None for t in ts)}/{len(ts)} null")
+
+print("\n===== all facts by kind (top 6 each)")
+d = tweets.Data(wh, None, today)
+facts = tweets.find_facts(d)
+print(Counter(f.kind for f in facts))
+by = defaultdict(list)
+for f in facts:
+    by[f.kind].append(f)
+for k, fs in by.items():
+    print(f"\n--- {k} ({len(fs)})")
+    for f in sorted(fs, key=lambda f: -f.score)[:6]:
+        print(f"[{f.score}] {f.final}\n   evidence: {json.dumps(f.evidence, ensure_ascii=False)}\n")
+
+print("\n===== drafts as the daily run would choose them (repeats allowed, to compare)")
+for i, f in enumerate(tweets.draft(wh, today, top=25, include_repeats=True, log=print), 1):
+    print(f"\n{i}. [{f.kind} {f.score}] {f.final}")

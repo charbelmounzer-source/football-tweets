@@ -12,11 +12,15 @@ Each run, in this order and within the request cap:
      stored only if the content changed
   4. match details of past seasons, most recent first, until the history is complete
 Only the league-seasons and matches touched are rewritten; everything else stays as it is.
+
+rebuild() re-makes every core table from the slim copies in raw.* without downloading
+anything: after a change in model.py (a new column), or if FotMob ever disappears.
 """
 
 import hashlib
 import json
 import time
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from . import config
@@ -213,3 +217,40 @@ def update(wh, client, today=None, now=None, leagues=None,
         f"{s['matches_backfilled']} of past seasons ({s['history_left']} left), "
         f"{s['matches_waiting']} not published yet, {len(s['errors'])} errors")
     return s
+
+
+def rebuild(wh, now=None, seasons=None, log=print):
+    """Re-model the core tables from raw.* (no request to FotMob), one season at a time.
+    Raw rows are not touched, so the freshness check and the update keep working as before."""
+    now = now or utcnow()
+    have = sorted({r["season"] for r in wh.read("raw.league", ["season"])})
+    totals = defaultdict(int)
+    for y in (seasons or have):
+        leagues = wh.read("raw.league", ["league", "payload"], {"season": y})
+        rows = {t: [] for t in LEAGUE_TABLES}
+        for r in leagues:
+            for t, new in model_league(r["league"], y, json.loads(r["payload"]), now).items():
+                rows[t] += new
+        if leagues:
+            names = [r["league"] for r in leagues]
+            for t in LEAGUE_TABLES:
+                wh.replace(f"core.{t}", rows[t], {"season": y, "league": names})
+        played = {m["match_id"]: m for m in wh.read("core.matches", None, {"season": y})}
+        rows = {t: [] for t in MATCH_TABLES}
+        n = 0
+        for r in wh.read("raw.match", ["match_id", "problem", "payload"], {"season": y}):
+            m = played.get(r["match_id"])
+            if r["problem"] or m is None:
+                continue
+            for t, new in model_match(m, json.loads(r["payload"])).items():
+                rows[t] += new
+            n += 1
+        for t in MATCH_TABLES:
+            wh.replace(f"core.{t}", rows[t], {"season": y})
+        totals["leagues"] += len(leagues)
+        totals["matches"] += n
+        log(f"  {config.season_label(y)}: {len(leagues)} league answers, {len(played)} played matches, "
+            f"{n} with details re-modelled")
+    log(f"  rebuilt from raw: {totals['leagues']} league-seasons, {totals['matches']} matches "
+        f"(no download)")
+    return dict(totals)
