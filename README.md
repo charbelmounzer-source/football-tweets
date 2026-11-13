@@ -163,7 +163,7 @@ Things to know about the data:
 | F2 | error | recent matches (last 7 days) suddenly without xG or player minutes: FotMob changed its format without failing |
 | F3 | error | more than 10 matches past kick-off (2+ days) still without a result: FotMob stopped updating results |
 | H1 | error | a league-season (any season) lists fewer matches than teams × (teams − 1) |
-| H2 | error | a finished season with less than 98% of its matches played (except `SHORT_SEASONS`), or, from 2016/17, less than 98% of its downloaded matches with player stats |
+| H2 | error | a finished season with less than 98% of its matches played (except `SHORT_SEASONS`), or too few of its downloaded matches with player stats: 98% from 2020/21, 95% in 2016/17 – 2019/20 (FotMob is patchier there: Ligue 1 2019/20 has 7 of 279 without) |
 | H3 | warn | a played match (2+ days old) whose details are not downloaded yet (expected while the history loads) |
 | H4 | warn | from 2020/21, a league-season with more than 2% of detailed matches without xG |
 | H5 | warn | before 2016/17, a finished season with less than 60% of its matches with a lineup |

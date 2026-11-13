@@ -67,6 +67,10 @@ Probed on all five leagues (FotMob only, 13 Nov):
   an empty page) as "maybe reached", so no claim rests on it; `overtake` skips unknown
   tallies and drops the G/A line when assists are unknown.
 - Checks H2/H4/H5 know the eras; a match not yet downloaded is H3 (warn), not a hole.
+- First load run (13 Nov, 15:54): all 2010/11-2019/20 results and tables arrived (every
+  season complete); 1,917 match pages. It **failed on H2**: Ligue 1 2019/20 has 7 of 279
+  matches without player stats on FotMob (97.5% < 98%), plus 1 in La Liga 2019/20. Real gaps,
+  not a bug: H2 now asks 95% in the 2016/17-2019/20 era (98% from 2020/21).
 - About 18,200 requests to load: ~10 runs. `overtake`/`pace` wait until all are in.
 
 ## Why FotMob

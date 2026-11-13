@@ -140,3 +140,26 @@ def test_history_still_loading_is_not_an_error(wh, monkeypatch):
     status = {r["check_id"]: r["status"] for r in results}
     assert errors == 0 and status["H3"] == "warn"
     assert not Data(wh, None, TODAY).history_complete              # pace / overtake wait
+
+
+def test_the_player_stats_era_accepts_a_few_more_gaps(eras):
+    """2016/17-2019/20 (here 2024/25): 97% of matches with player stats is fine (real: Ligue 1
+    2019/20, 272 of 279); below 95% is a hole. From 2020/21 (here 2025/26) the bar stays 98%."""
+    wh, _, _ = eras
+    h2 = lambda: next(r for r in checks.run_checks(wh, TODAY, NOW, log=quiet)[0] if r["check_id"] == "H2")
+
+    def unusable(season, n):
+        ids = [m["match_id"] for m in wh.read("core.matches", None, {"season": season, "league": "Serie A"})][:n]
+        for mid in ids:
+            raw = wh.read("raw.match", None, {"match_id": mid})[0]
+            wh.replace("raw.match", [dict(raw, problem="no player stats")], {"match_id": mid})
+    unusable(2024, 3)                                          # 87/90 = 96.7%
+    assert h2()["status"] == "ok"
+    unusable(2024, 5)                                          # 85/90 = 94.4%
+    assert h2()["status"] == "error" and "Serie A 2024/25" in h2()["sample"]
+    unusable(2024, 0)
+    wh2 = [m["match_id"] for m in wh.read("core.matches", None, {"season": 2025, "league": "La Liga"})][:2]
+    for mid in wh2:                                           # 88/90 = 97.8% in the xG era: a hole
+        raw = wh.read("raw.match", None, {"match_id": mid})[0]
+        wh.replace("raw.match", [dict(raw, problem="no player stats")], {"match_id": mid})
+    assert "La Liga 2025/26" in h2()["sample"]

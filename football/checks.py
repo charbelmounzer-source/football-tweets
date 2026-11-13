@@ -14,6 +14,9 @@ from . import config
 
 DT = "%Y-%m-%d %H:%M:%S"
 MIN_COVERAGE = 0.98      # below this share of matches (or of match details), a season has a hole
+# 2016/17-2019/20: FotMob's pages lack player stats a bit more often (Ligue 1 2019/20: 7 of
+# 279, seen 13 Nov 2026). A whole missing matchday is still ~3%, so 95% still finds a hole.
+MIN_COVERAGE_PLAYERS_ERA = 0.95
 MAX_XG_MISSING = 0.02    # above this share of detailed matches without xG: warning
 # before player stats (2016/17): below this share of matches with a lineup, warning. FotMob's
 # own pages are empty for about 1 match in 4 in 2010/11 (sample of 13 Nov 2026), full later.
@@ -204,12 +207,14 @@ def run_checks(wh, today, now, leagues=None, log=print):
            if r["listed"] < r["expected"]])
     # player stats exist from 2016/17: there a match without them is a hole. Before, FotMob only
     # has lineups and events, and some pages are empty: reported (H5), not an error.
+    need = {"xG": MIN_COVERAGE, "players": MIN_COVERAGE_PLAYERS_ERA}
     check("H2", "error", f"Finished league-season with less than {MIN_COVERAGE:.0%} of its matches "
-          f"played, or (from {config.season_label(config.PLAYER_STATS_FROM)}) less than "
-          f"{MIN_COVERAGE:.0%} of its matches with details",
+          f"played, or with too few of its downloaded matches with details ({MIN_COVERAGE:.0%} from "
+          f"{config.season_label(config.XG_FROM)}, {MIN_COVERAGE_PLAYERS_ERA:.0%} from "
+          f"{config.season_label(config.PLAYER_STATS_FROM)})",
           [f"{label(r)}: {r['played']}/{r['expected']} played, {r['settled_details']}/{r['settled']} with details"
            for r in cov if r["finished"] and ((r["share_played"] < MIN_COVERAGE and not r["short"])
-                                              or (r["era"] != "lineups" and r["share_details"] < MIN_COVERAGE))])
+                                              or r["share_details"] < need.get(r["era"], 0))])
     check("H3", "warn", "Played match without a download of its details (2+ days old)",
           [f"{label(r)}: match {mid}" for r in cov for mid in r["pending"]])
     check("H4", "warn", f"League-season (from {config.season_label(config.XG_FROM)}) with more than "
