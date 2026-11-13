@@ -22,7 +22,7 @@ rewrites when several things change, and honest feedback over encouragement.
 | Service account | `football-pipeline@football-model-494509.iam.gserviceaccount.com`, roles BigQuery Data Editor + Job User. Key saved as repo secret `GCP_SA_KEY`. |
 | GitHub Actions `Daily update` | Daily 04:23 UTC, ~3 minutes once the history is loaded. Input **rebuild** re-makes core tables from raw (needed once after new columns). |
 | Pull request 9 (merged 13 Nov) | Coverage checks, `rebuild`, 14 new player / 4 team columns, overtake fix, 4 new tweet patterns, "since" rule. Rebuild run on BigQuery 13 Nov: 11,233 matches, 0 errors. |
-| Branch `history-2010` (13 Nov) | History back to 2010/11 with FotMob's eras; unknown = NULL. See "History back to 2010/11". |
+| Pull request 11 (merged 13 Nov) | History back to 2010/11 with FotMob's eras; unknown = NULL. See "History back to 2010/11". The older seasons load over the next ~10 runs. |
 
 ## Done on 13 Nov 2026
 
@@ -48,7 +48,7 @@ rewrites when several things change, and honest feedback over encouragement.
   is this one); a promoted team's first clean sheet says "this season, at the Nth attempt";
   `start` needs 3 past seasons; at most 30% of the drafts from one pattern.
 
-## History back to 2010/11 (branch `history-2010`, 13 Nov)
+## History back to 2010/11 (pull request 11, merged 13 Nov)
 
 The owner asked for every season FotMob has, with unavailable data NULL and never compared.
 Probed on all five leagues (FotMob only, 13 Nov):
@@ -132,7 +132,7 @@ Say so plainly when it matters; do not assume these work.
 
 ## Next steps, in order
 
-1. **Merge `history-2010`, then let the history load** (~10 runs of 2,000 requests; run by
+1. **Let the history load** (~10 runs of 2,000 requests from 13 Nov; run `Daily update` by
    hand to go faster). Then read `status`: unusable per season (expect ~25% in 2010/11),
    and the first drafts that use old seasons.
 2. **Tweet quality, with the owner's examples.** He will bring tweets he likes from X; turn
