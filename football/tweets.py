@@ -561,7 +561,7 @@ def gen_streaks(d, lg):
             notes, rarity = [], 3 + min(length, 30) / 3
             # "since S" only when S is a past season in which a run this long happened;
             # nobody in the data -> the last time is before it -> no claim
-            if league_ref and league_ref[1] < d.season:
+            if league_ref and league_ref[1] <= d.season - 2:    # "since last season" is no story
                 n2, s2, who = league_ref
                 by = (f"their own run of {n2}" if who == team else
                       f"{who}{' also' if n2 == length else ''} had {n2}")
@@ -654,9 +654,9 @@ def gen_start(d, lg):
                         f"any {lg} team since {by} {fmt(lv, kind_fmt)} in {season_label(ls)}.")
                 rarity = 8 + min(d.season - ls, 4) / 2
             else:
-                same = "the same" if ref_txt == v_txt else ref_txt
+                then = f"also {v_txt}" if ref_txt == v_txt else ref_txt
                 text = (f"📊 {team} have {v_txt} {words} after {n} {lg} matches - their {kind} start "
-                        f"since {season_label(ref_s)} ({same} then).")
+                        f"since {season_label(ref_s)} ({then} then).")
                 rarity = 5.5 + min(d.season - ref_s, 5) / 2
             text += f"\n\n{pick(PUNCH[f'{kind}_{key}'], team + key)}"
             f = Fact("start", lg, team, text, rarity=rarity,
