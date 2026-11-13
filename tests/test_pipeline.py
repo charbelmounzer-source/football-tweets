@@ -259,7 +259,7 @@ def test_cli_daily_end_to_end(tmp_path, monkeypatch, capsys):
     cli.main(["status", *common])
     out = capsys.readouterr().out
     epl = next(line.split() for line in out.splitlines() if line.startswith("Premier League  2026/27"))
-    assert epl[3:9] == ["10", "90", "50", "50", "0", "0"]    # teams, expected, played, details...
+    assert epl[3:10] == ["xG", "10", "90", "50", "50", "0", "0"] and epl[-1] == "0"   # ..., to load
     assert "match details still to download: 0" in out
     # a data-quality error stops the run before drafting
     w.replace("core.team_matches", [], {"match_id": FIRST_EPL})

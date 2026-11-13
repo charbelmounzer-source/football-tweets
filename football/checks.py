@@ -15,6 +15,9 @@ from . import config
 DT = "%Y-%m-%d %H:%M:%S"
 MIN_COVERAGE = 0.98      # below this share of matches (or of match details), a season has a hole
 MAX_XG_MISSING = 0.02    # above this share of detailed matches without xG: warning
+# before player stats (2016/17): below this share of matches with a lineup, warning. FotMob's
+# own pages are empty for about 1 match in 4 in 2010/11 (sample of 13 Nov 2026), full later.
+MIN_OLD_COVERAGE = 0.60
 SETTLE_DAYS = 2          # a match this recent may not have its details yet
 
 
@@ -64,8 +67,13 @@ def coverage(wh, today, leagues=None):
         n = len(r["teams"])
         r["teams"], r["expected"] = n, n * (n - 1)
         r["finished"] = r["season"] < season_now
+        r["short"] = config.SHORT_SEASONS.get((r["league"], r["season"]))
+        r["era"] = ("xG" if r["season"] >= config.XG_FROM else
+                    "players" if r["season"] >= config.PLAYER_STATS_FROM else "lineups")
         r["share_played"] = r["played"] / r["expected"] if r["expected"] else 0
-        r["share_details"] = r["settled_details"] / r["settled"] if r["settled"] else 1
+        # among matches already downloaded: one still waiting (history loading) is not a hole
+        done = r["settled"] - len(r["pending"])
+        r["share_details"] = r["settled_details"] / done if done else 1
     return [out[k] for k in sorted(out)]
 
 
@@ -167,18 +175,32 @@ def run_checks(wh, today, now, leagues=None, log=print):
     check("H1", "error", "League-season whose list of matches is shorter than teams x (teams - 1)",
           [f"{label(r)}: {r['listed']} listed, {r['expected']} expected" for r in cov
            if r["listed"] < r["expected"]])
+    # player stats exist from 2016/17: there a match without them is a hole. Before, FotMob only
+    # has lineups and events, and some pages are empty: reported (H5), not an error.
     check("H2", "error", f"Finished league-season with less than {MIN_COVERAGE:.0%} of its matches "
-          f"played, or less than {MIN_COVERAGE:.0%} of its matches with details",
+          f"played, or (from {config.season_label(config.PLAYER_STATS_FROM)}) less than "
+          f"{MIN_COVERAGE:.0%} of its matches with details",
           [f"{label(r)}: {r['played']}/{r['expected']} played, {r['settled_details']}/{r['settled']} with details"
-           for r in cov if r["finished"] and min(r["share_played"], r["share_details"]) < MIN_COVERAGE])
+           for r in cov if r["finished"] and ((r["share_played"] < MIN_COVERAGE and not r["short"])
+                                              or (r["era"] != "lineups" and r["share_details"] < MIN_COVERAGE))])
     check("H3", "warn", "Played match without a download of its details (2+ days old)",
           [f"{label(r)}: match {mid}" for r in cov for mid in r["pending"]])
-    check("H4", "warn", f"League-season with more than {MAX_XG_MISSING:.0%} of detailed matches "
-          f"without xG",
+    check("H4", "warn", f"League-season (from {config.season_label(config.XG_FROM)}) with more than "
+          f"{MAX_XG_MISSING:.0%} of detailed matches without xG",
           [f"{label(r)}: {r['no_xg']}/{r['details']}" for r in cov
-           if r["details"] and r["no_xg"] / r["details"] > MAX_XG_MISSING])
+           if r["era"] == "xG" and r["details"] and r["no_xg"] / r["details"] > MAX_XG_MISSING])
+    check("H5", "warn", f"League-season before {config.season_label(config.PLAYER_STATS_FROM)} with "
+          f"less than {MIN_OLD_COVERAGE:.0%} of its matches with a lineup",
+          [f"{label(r)}: {r['settled_details']}/{r['settled']}" for r in cov
+           if r["finished"] and r["era"] == "lineups" and r["share_details"] < MIN_OLD_COVERAGE])
     total = sum(r["played"] for r in cov)
     gaps = sum(len(r["unusable"]) + len(r["pending"]) for r in cov)
+    by_era = {}
+    for r in cov:
+        e = by_era.setdefault(r["era"], [0, 0])
+        e[0] += r["played"]
+        e[1] += r["details"]
+    log("  eras: " + ", ".join(f"{era} {d}/{p} with details" for era, (p, d) in by_era.items()))
     log(f"  history: {len(cov)} league-seasons, {total} played matches, "
         f"{sum(r['details'] for r in cov)} with details, {gaps} without "
         f"({sum(len(r['unusable']) for r in cov)} that FotMob cannot give)")

@@ -12,9 +12,18 @@ LEAGUES = {                       # our code -> league name used in every table
 }
 FOTMOB_IDS = {"EPL": 47, "La_Liga": 87, "Serie_A": 55, "Bundesliga": 54, "Ligue_1": 53}
 
-# First season loaded. FotMob has shots and xG from 2020/21 (checked on the Premier League);
-# before that it only has results (and player stats without xG from 2016/17).
-FIRST_SEASON = int(os.environ.get("FOOTBALL_FIRST_SEASON", "2020"))
+# What FotMob has, by era (checked on all five leagues on 13 Nov 2026; nothing before 2010/11):
+#   2020/21 ->         everything: player stats, team stats, every shot with xG
+#   2016/17 - 2019/20  player stats (minutes, goals, assists, rating...) and team stats, no shots/xG
+#   2010/11 - 2015/16  results, lineups, substitutions, and goal / card events that name the
+#                      player but give no player id: goals are matched to the lineup by name
+# Whatever an era does not have is stored as NULL (unknown), never 0.
+FIRST_SEASON = int(os.environ.get("FOOTBALL_FIRST_SEASON", "2010"))
+PLAYER_STATS_FROM = 2016     # a match from this season on must have player stats to be used
+XG_FROM = 2020               # shots and xG from this season on
+
+# Finished seasons that really had fewer matches than teams x (teams - 1)
+SHORT_SEASONS = {("Ligue 1", 2019): "stopped in March 2020 (COVID), 279 of 380 matches played"}
 
 PROJECT = os.environ.get("BQ_PROJECT", "football-model-494509")
 LOCATION = os.environ.get("BQ_LOCATION", "EU")

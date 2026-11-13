@@ -204,7 +204,13 @@ class FakeFotMob:
                                          "isGoalkeeper": True, "stats": []}
             lineup[key] = {"id": side["tid"], "name": side["name"], "formation": "4-4-2",
                            "starters": [{"id": p["id"], "name": p["name"]} for p in side["players"][:11]],
-                           "subs": [{"id": side["players"][11]["id"]}, {"id": unused}]}
+                           "subs": [{"id": side["players"][11]["id"], "name": side["players"][11]["name"]},
+                                    {"id": unused, "name": "Unused Sub"}]}
+            events.append({"type": "Substitution", "time": 70, "isHome": side is h,
+                           "swap": [{"id": str(side["players"][11]["id"]), "name": side["players"][11]["name"]},
+                                    {"id": str(side["players"][10]["id"]), "name": side["players"][10]["name"]}]})
+            events.append({"type": "Card", "time": 30, "isHome": side is h, "card": "Yellow",
+                           "playerId": side["players"][4]["id"], "nameStr": side["players"][4]["name"]})
 
         def both(key, fn):
             return {"key": key, "stats": [fn(h), fn(a)], "type": "text"}
@@ -240,4 +246,33 @@ class FakeFotMob:
                         "lineup": lineup, "matchFacts": {"events": {"events": events}, "poll": {"votes": 123}},
                         "h2h": {"matches": []}, "momentum": {"main": {}}},
             "seo": {"path": "x"}}
-        return self.tweak.get(("match", match_id), lambda x: x)(payload)
+        return self.tweak.get(("match", match_id), lambda x: x)(era(payload, m["season"]))
+
+
+XG_KEYS = ("expected_goals", "expected_goals_non_penalty", "expected_goals_open_play",
+           "expected_goals_set_play", "expected_goals_on_target", "expected_goals_on_target_variant",
+           "expected_assists", "xg_and_xa")
+
+
+def era(payload, season):
+    """What FotMob's match page holds in older seasons (seen on real answers, 13 Nov 2026):
+    before config.XG_FROM no shots and no xG; before config.PLAYER_STATS_FROM no player or
+    team stats either - only lineups and events, whose goals and cards name the player but
+    carry player id 0."""
+    c = payload["content"]
+    if season < config.XG_FROM:
+        c["shotmap"] = {"shots": []}
+        for group in c["stats"]["Periods"]["All"]["stats"]:
+            group["stats"] = [x for x in group["stats"] if x["key"] not in XG_KEYS]
+        for p in c["playerStats"].values():
+            for group in p["stats"]:
+                group["stats"] = {k: v for k, v in group["stats"].items() if v["key"] not in XG_KEYS}
+            p["shotmap"] = []
+    if season < config.PLAYER_STATS_FROM:
+        payload["general"]["coverageLevel"] = "lower"
+        c["playerStats"] = {}
+        c["stats"] = {}
+        for e in c["matchFacts"]["events"]["events"]:
+            if e["type"] in ("Goal", "Card"):
+                e["playerId"] = 0
+    return payload
