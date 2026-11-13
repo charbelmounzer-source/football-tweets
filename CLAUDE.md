@@ -42,9 +42,10 @@ rewrites when several things change, and honest feedback over encouragement.
   reached it, no claim (`tweets.last_reached`). Before, "the most since 2020/21" only meant
   "since our data starts". Also fixed: `overtake` now also needs the *current* club to start
   after the data does (his tally there could be short).
-- **Quality fixes**: punch lines per meaning; "their longest since" needs 3 seasons in the
-  league (promoted Hull City); a promoted team's first clean sheet says "this season, at the
-  Nth attempt"; `start` needs 3 past seasons; at most 30% of the drafts from one pattern.
+- **Quality fixes**: punch lines per meaning; a run's "since S" needs S 2+ seasons back and a
+  start's 3+ (no more "their longest since 2020/21" for promoted Hull City, whose only season
+  is this one); a promoted team's first clean sheet says "this season, at the Nth attempt";
+  `start` needs 3 past seasons; at most 30% of the drafts from one pattern.
 
 ## Why FotMob
 

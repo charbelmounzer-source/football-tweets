@@ -191,7 +191,8 @@ Rules that keep the numbers true:
   that season: those players are left out of season totals and `overtake`, and a `pace`
   record must beat a total from such a team-season by 2, not 1.
 - A leader stat waits until its column is loaded for every match of the season (`rebuild`).
-- "Their best/worst start since S" needs S at least 3 seasons ago. A promoted team's first
+- The named season must be 2+ seasons back for a run, 3+ for a start ("the longest since
+  last season" is no story). A promoted team's first
   clean sheet or win says "for the first time this season, at the Nth attempt".
 - Each punch line belongs to one meaning ("Hard to beat" only on unbeaten runs, "Wasteful"
   only where chances were missed).
