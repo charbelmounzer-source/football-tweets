@@ -21,7 +21,8 @@ rewrites when several things change, and honest feedback over encouragement.
 | BigQuery project `football-model-494509` | Billing enabled, datasets `football_raw`, `football_core`, `football_tweets`. `replace()`, views and old-table replacement work on the real project. |
 | Service account | `football-pipeline@football-model-494509.iam.gserviceaccount.com`, roles BigQuery Data Editor + Job User. Key saved as repo secret `GCP_SA_KEY`. |
 | GitHub Actions `Daily update` | Daily 04:23 UTC, ~3 minutes once the history is loaded. Input **rebuild** re-makes core tables from raw (needed once after new columns). |
-| Branch `data-checks-and-tweets` (13 Nov) | Coverage checks H1-H4, `rebuild` command, 14 new player / 4 team columns, overtake fix, 4 new tweet patterns. See "Done on 13 Nov". |
+| Pull request 9 (merged 13 Nov) | Coverage checks, `rebuild`, 14 new player / 4 team columns, overtake fix, 4 new tweet patterns, "since" rule. Rebuild run on BigQuery 13 Nov: 11,233 matches, 0 errors. |
+| Branch `history-2010` (13 Nov) | History back to 2010/11 with FotMob's eras; unknown = NULL. See "History back to 2010/11". |
 
 ## Done on 13 Nov 2026
 
@@ -46,6 +47,26 @@ rewrites when several things change, and honest feedback over encouragement.
   start's 3+ (no more "their longest since 2020/21" for promoted Hull City, whose only season
   is this one); a promoted team's first clean sheet says "this season, at the Nth attempt";
   `start` needs 3 past seasons; at most 30% of the drafts from one pattern.
+
+## History back to 2010/11 (branch `history-2010`, 13 Nov)
+
+The owner asked for every season FotMob has, with unavailable data NULL and never compared.
+Probed on all five leagues (FotMob only, 13 Nov):
+- FotMob lists 2010/11 to now, nothing earlier. Every season's match list is complete.
+- 2020/21 on: everything. 2016/17-2019/20: player and team stats, no shots/xG.
+  2010/11-2015/16: lineups, substitutions, goal and card events; no stats.
+- Old events carry **player id 0**, only names: `model_lineups` matches them to the lineup
+  (accent-free exact name, then a unique surname); a miss, or goals not adding up to the
+  score, makes that match's goals NULL. Real sample: 94/94 matches matched.
+- Goal events vs official stats on 34 matches of 2016-2019: goals 34/34, assists 32/34 ->
+  assists are NOT taken from events (NULL before 2016/17).
+- About 1 match in 4 of 2010/11 has an empty page ("empty page", unusable; results only).
+- Ligue 1 2019/20 stopped at 279 matches (COVID): `config.SHORT_SEASONS`.
+- Tweets: `plus()` keeps NULL unknown; `pace` counts an unknown tally (or a team-season with
+  an empty page) as "maybe reached", so no claim rests on it; `overtake` skips unknown
+  tallies and drops the G/A line when assists are unknown.
+- Checks H2/H4/H5 know the eras; a match not yet downloaded is H3 (warn), not a hole.
+- About 18,200 requests to load: ~10 runs. `overtake`/`pace` wait until all are in.
 
 ## Why FotMob
 
@@ -93,6 +114,12 @@ dropping the Understat archive rather than bridging two id systems and two xG mo
 
 Say so plainly when it matters; do not assume these work.
 
+- **The full 2010/11-2019/20 load**: tried on 150 real match pages only (no BigQuery write
+  from a branch). The first runs after merge are the test: read their logs and `status`.
+- **Which side `isHome` means on an old own-goal event** (scorer's team or the team that
+  benefits). Counted for the team that benefits; if wrong, the score check fails and that
+  match's goals become NULL - safe, but read `status` / NULL goals per season once loaded.
+
 - **FotMob's tolerance** over months of daily runs. 2,000 requests in one run worked (12 Nov).
 - **Postponed matches**: none seen. The status is derived from time (kick-off passed 48 h ago,
   no result), not from a FotMob field.
@@ -105,9 +132,9 @@ Say so plainly when it matters; do not assume these work.
 
 ## Next steps, in order
 
-1. **Merge the branch, then run `Daily update` once with rebuild ticked** (~10 minutes more
-   than a normal run). Tried on a copy of the real data on 13 Nov: 11,233 matches re-modelled,
-   every new column filled, 14 checks, 0 errors.
+1. **Merge `history-2010`, then let the history load** (~10 runs of 2,000 requests; run by
+   hand to go faster). Then read `status`: unusable per season (expect ~25% in 2010/11),
+   and the first drafts that use old seasons.
 2. **Tweet quality, with the owner's examples.** He will bring tweets he likes from X; turn
    each into a pattern or a wording rule. Read the drafts of a few days first.
 3. **More material from FotMob** if wanted: xG open play vs set play (columns exist, not

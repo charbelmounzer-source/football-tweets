@@ -71,16 +71,16 @@ def cmd_rebuild(wh, args):
 def cmd_status(wh, args):
     rows = checks.coverage(wh, args.today or date.today())
     print(f"{'league':<16}{'season':<9}{'data':<9}{'teams':>5}{'expected':>9}{'played':>7}{'details':>8}"
-          f"{'unusable':>9}{'no xG':>6}{'coverage':>9}")
+          f"{'unusable':>9}{'no xG':>6}{'coverage':>9}{'to load':>8}")
     for r in rows:
         no_xg = r["no_xg"] if r["era"] == "xG" else "-"
         print(f"{r['league']:<16}{config.season_label(r['season']):<9}{r['era']:<9}{r['teams']:>5}"
               f"{r['expected']:>9}{r['played']:>7}{r['details']:>8}{len(r['unusable']):>9}{no_xg:>6}"
-              f"{100 * r['share_details']:>8.1f}%" + (f"  ({r['short']})" if r["short"] else ""))
+              f"{100 * r['share_details']:>8.1f}%{len(r['pending']):>8}" + (f"  ({r['short']})" if r["short"] else ""))
     left = sum(len(r["pending"]) for r in rows)
     print("\ndata: xG = everything; players = player and team stats, no shots/xG; lineups = lineups,"
           "\n  goal scorers and cards from the events (NULL where a name cannot be matched)."
-          "\nexpected = teams x (teams - 1); coverage = share of played matches 2+ days old that have details")
+          "\nexpected = teams x (teams - 1); coverage = share of downloaded matches (2+ days old) that have details;\n  to load = played matches whose page is not downloaded yet")
     print(f"match details still to download: {left}"
           + (f" (about {-(-left // config.MAX_REQUESTS)} run(s) of {config.MAX_REQUESTS} requests)" if left else ""))
     fetched = sorted(r["fetched_at"] for r in wh.read("raw.league", ["fetched_at"]))

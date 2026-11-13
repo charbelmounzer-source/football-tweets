@@ -127,3 +127,16 @@ def test_pace_treats_an_unknown_season_as_maybe_reached(eras, monkeypatch):
     assert ref[1] == 2023 and ref[2][0] is None                   # -> no claim
     ref = tweets.last_reached(entries, 5, True)
     assert ref[1] == 2024 and ref[2][0] == 5                       # -> "since X had 5 in 2024/25"
+
+
+def test_history_still_loading_is_not_an_error(wh, monkeypatch):
+    """While the older seasons are being downloaded (about ten runs on the real data), the
+    matches still waiting are a warning (H3), not a hole: tweets keep being drafted."""
+    from football import pipeline
+    monkeypatch.setattr(config, "PLAYER_STATS_FROM", 2024)
+    monkeypatch.setattr(config, "XG_FROM", 2025)
+    pipeline.update(wh, FakeFotMob(NOW, max_requests=400), now=NOW, log=quiet)
+    results, errors = checks.run_checks(wh, TODAY, NOW, log=quiet)
+    status = {r["check_id"]: r["status"] for r in results}
+    assert errors == 0 and status["H3"] == "warn"
+    assert not Data(wh, None, TODAY).history_complete              # pace / overtake wait

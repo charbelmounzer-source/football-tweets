@@ -224,6 +224,8 @@ def slim_match(payload):
 
 def validate_match(slim, match):
     """Reason the details can't be used (yet), or None."""
+    if slim.get("match_id") is None:
+        return "empty page"                      # some 2010/11 matches: FotMob has nothing
     if slim.get("match_id") != match["match_id"]:
         return f"answer is for match {slim.get('match_id')!r}"
     if (slim["home"]["id"], slim["away"]["id"]) != (match["home_team_id"], match["away_team_id"]):

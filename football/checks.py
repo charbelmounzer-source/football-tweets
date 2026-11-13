@@ -15,7 +15,9 @@ from . import config
 DT = "%Y-%m-%d %H:%M:%S"
 MIN_COVERAGE = 0.98      # below this share of matches (or of match details), a season has a hole
 MAX_XG_MISSING = 0.02    # above this share of detailed matches without xG: warning
-MIN_OLD_COVERAGE = 0.90  # before player stats (2016/17): below this share with a lineup, warning
+# before player stats (2016/17): below this share of matches with a lineup, warning. FotMob's
+# own pages are empty for about 1 match in 4 in 2010/11 (sample of 13 Nov 2026), full later.
+MIN_OLD_COVERAGE = 0.60
 SETTLE_DAYS = 2          # a match this recent may not have its details yet
 
 
@@ -69,7 +71,9 @@ def coverage(wh, today, leagues=None):
         r["era"] = ("xG" if r["season"] >= config.XG_FROM else
                     "players" if r["season"] >= config.PLAYER_STATS_FROM else "lineups")
         r["share_played"] = r["played"] / r["expected"] if r["expected"] else 0
-        r["share_details"] = r["settled_details"] / r["settled"] if r["settled"] else 1
+        # among matches already downloaded: one still waiting (history loading) is not a hole
+        done = r["settled"] - len(r["pending"])
+        r["share_details"] = r["settled_details"] / done if done else 1
     return [out[k] for k in sorted(out)]
 
 

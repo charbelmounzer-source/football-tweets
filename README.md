@@ -1,7 +1,30 @@
 # Football tweets: top 5 leagues, fresh every day
 
-FotMob data for the Premier League, La Liga, Serie A, Bundesliga and Ligue 1, from 2020/21,
+FotMob data for the Premier League, La Liga, Serie A, Bundesliga and Ligue 1, from 2010/11,
 loaded into BigQuery every day, checked, and turned into tweet drafts.
+
+## What FotMob has, by era
+
+FotMob lists every season of the five leagues back to 2010/11 (nothing before), with all
+results and tables. What a match page holds depends on the era (checked on all five leagues
+on 13 Nov 2026):
+
+| Seasons | Results, tables | Lineups, goal scorers, cards | Player stats (minutes, goals, assists, rating...), team stats | Shots, xG |
+|---|---|---|---|---|
+| 2020/21 → | ✅ | ✅ | ✅ | ✅ |
+| 2016/17 – 2019/20 | ✅ | ✅ | ✅ | — |
+| 2010/11 – 2015/16 | ✅ | ✅ ¹ | — | — |
+
+¹ The events of these matches name the scorer but carry no player id: scorers and cards are
+matched to the lineup by name. If one name does not match, or the goals do not add up to the
+final score, that match's goals (or cards) are NULL. On a real sample, all 94 matches
+matched. Assists are not taken from the events (they disagreed with the official stats in 2 of
+34 later matches), so assists start in 2016/17. About 1 match in 4 of 2010/11 has an empty
+page: results only. Ligue 1 2019/20 stopped in March 2020 (COVID): 279 matches.
+
+**What an era does not have is NULL (unknown), never 0**, and nothing is compared over
+seasons where it is unknown: a record on goals can go back to 2010/11, on assists to 2016/17,
+on xG to 2020/21. `config.py`: `FIRST_SEASON`, `PLAYER_STATS_FROM`, `XG_FROM`, `SHORT_SEASONS`.
 
 ```
 FotMob ──► football_raw      the answers, reduced to what is used
@@ -19,7 +42,7 @@ up where it stopped.
 
 1. **Update**, within a cap of 2,000 requests, 1.5 s apart:
    - the current season's league data for the 5 leagues (results, fixtures, league table);
-     past seasons back to 2020/21 once;
+     past seasons back to 2010/11 once;
    - match details (team stats, players, shots) for every played match of this season not
      loaded yet;
    - match details again for matches of the last 10 days, stored only if FotMob changed them;
@@ -35,12 +58,13 @@ changed is rewritten: one league-season, or the matches touched. A failed reques
 answer that is empty, for another season, or has lost results is refused and the previous
 data stays.
 
-**The first load is long.** About 11,200 matches (500 this season, 10,700 from 2020/21 to
-2025/26), one request each: six runs of 2,000 requests, about an hour each. The daily
-schedule does it by itself in six days; running the workflow by hand a few times does it
-sooner. `python -m football status` shows what is left. Until the history is complete,
-tweets that need a player's full history (`overtake`) are switched off; everything else works
-from the first run.
+**The first load is long.** 2020/21 on was loaded on 11-13 Nov 2026 (about 11,200 matches).
+The seasons 2010/11 to 2019/20 add about 18,200 matches, one request each: about ten runs of
+2,000 requests, an hour each. The daily schedule does it by itself in ten days; running the
+workflow by hand does it sooner. Their results and tables arrive in the first run (50
+requests). `python -m football status` shows what is left ("to load"). Until every match is
+downloaded, tweets that need a player's full history (`overtake`, `pace`) are switched off;
+everything else works throughout, and team records use the older results at once.
 
 ## Set up (once)
 
@@ -115,12 +139,16 @@ Things to know about the data:
   105 × 68 pitch, `x` towards the goal attacked (FotMob does not document them).
 - **Results are complete from the first run; xG and players arrive match by match.** A match
   has `team_stats`, `player_matches` and `shots` rows only once its details are loaded.
+  Before 2016/17, `player_matches` has one row per player who played (starters and
+  substitutes who came on) with `started`, `goals`, `own_goals`, `yellow`, `red`; every other
+  column is NULL, and `team_stats` rows are all NULL. In 2016/17 – 2019/20, xG, xGOT,
+  penalty goals and own goals are NULL (no shot data), and a stat FotMob leaves out is NULL.
 - **Own goals** are in `shots` with `own_goal = 1` and the team of the player who scored it;
   they are not counted in his `goals` or in `shot_goals`. Goals follow the shot data: now and
   then FotMob's match page credits an attacker where the shot data records an own goal.
 - A team's xG can be lower than the sum of its shots' xG (several shots of one attack).
 - FotMob leaves a player stat out when it is zero; the pipeline stores 0 for shots, xG, xA
-  and key passes when the match has shot data.
+  and key passes when the match has shot data (2020/21 on), NULL otherwise.
 - No PPDA, no "deep" passes, no pre-match forecast, no per-match expected points: FotMob does
   not publish them. Expected points exist per season (`standings.xpts`).
 
@@ -133,9 +161,10 @@ Things to know about the data:
 | M2 | error | a played match without exactly 2 team rows |
 | S1 | warn | FotMob's league table disagrees with the results (played, points) |
 | H1 | error | a league-season (any season) lists fewer matches than teams × (teams − 1) |
-| H2 | error | a finished season with less than 98% of its matches played, or less than 98% of them with details |
-| H3 | warn | a played match (2+ days old) whose details were never downloaded |
-| H4 | warn | a league-season with more than 2% of detailed matches without xG |
+| H2 | error | a finished season with less than 98% of its matches played (except `SHORT_SEASONS`), or, from 2016/17, less than 98% of its downloaded matches with player stats |
+| H3 | warn | a played match (2+ days old) whose details are not downloaded yet (expected while the history loads) |
+| H4 | warn | from 2020/21, a league-season with more than 2% of detailed matches without xG |
+| H5 | warn | before 2016/17, a finished season with less than 60% of its matches with a lineup |
 | D1 | warn | a match played 2+ days ago without player details |
 | D2 | warn | score ≠ players' goals + own goals |
 | D3 | warn | a player's goals ≠ his goals in the shot data |
@@ -143,11 +172,12 @@ Things to know about the data:
 | D5 | warn | a team's xG is higher than the sum of its shots' xG by more than 0.3 (shots missing) |
 | X1 | warn | postponed or cancelled fixtures |
 
-The H checks cover every season loaded; the others the current one. Each run also prints one
-line: league-seasons, played matches, how many have details. A match FotMob has no details
-for (two since 2020/21 on 13 Nov 2026) is accepted: below 2% of a season it is not a hole.
-`python -m football status` shows the same per league-season (teams, expected, played,
-details, unusable, no xG, coverage).
+The H checks cover every season loaded, each against what its era should have; the others
+the current season. Each run also prints two lines: matches with details per era, and
+league-seasons, played matches, how many have details. A match FotMob has no details for
+(two since 2020/21 on 13 Nov 2026) is accepted: below 2% of a season it is not a hole.
+`python -m football status` shows the same per league-season (data era, teams, expected,
+played, details, unusable, no xG, coverage, to load).
 
 ## Tweet drafts
 
@@ -227,7 +257,8 @@ as the real answers) with the SQLite backend: no network, no BigQuery.
   notice, and its terms do not grant this use. Keep the 1.5 s delay and one run at a time. If
   it starts refusing GitHub's servers, run the same command from a computer — nothing else
   changes.
-- History starts in 2020/21: FotMob has no shots or xG before that (Premier League checked).
+- History starts in 2010/11: FotMob lists nothing earlier. Shots and xG start in 2020/21,
+  player stats in 2016/17 (all five leagues checked).
 - The old datasets `football_tm`, `football_index` and `football_us` in BigQuery are not used
   any more and can be deleted by hand.
 - GitHub pauses scheduled workflows after 60 days without repository activity; it emails you first.
