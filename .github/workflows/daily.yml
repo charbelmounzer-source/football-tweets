@@ -26,6 +26,7 @@ concurrency:
 
 permissions:
   contents: read
+  issues: write                    # the failure alert opens / closes an issue for the owner
 
 jobs:
   update:
@@ -46,11 +47,14 @@ jobs:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
       - name: Rebuild core tables from raw (no download)
         if: ${{ inputs.rebuild }}
-        run: python -m football rebuild
+        shell: bash                    # = bash -eo pipefail: a failure is not hidden by tee
+        run: python -m football rebuild 2>&1 | tee -a run.log
       - name: Update, check, draft
+        shell: bash                    # = bash -eo pipefail: a failure is not hidden by tee
         run: |
           python -m football daily --md drafts.md \
-            --max-requests "${{ inputs.max_requests || '2000' }}" --top "${{ inputs.top || '25' }}"
+            --max-requests "${{ inputs.max_requests || '2000' }}" --top "${{ inputs.top || '25' }}" \
+            2>&1 | tee -a run.log
       - name: What is loaded
         if: always()
         run: python -m football status
@@ -63,3 +67,49 @@ jobs:
           name: tweet-drafts
           path: drafts.md
           if-no-files-found: ignore
+
+      # ---- alerts: an issue assigned to the owner (GitHub emails him), closed on recovery
+      - name: Describe the failure
+        if: failure()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python -m football.alert --log run.log --run-url "$RUN_URL" --out alert.md || true
+      - name: Open or update the failure issue
+        if: failure()
+        uses: actions/github-script@v7
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const fs = require('fs');
+            let title = 'Daily update failed', body = `The run failed early. Full log: ${process.env.RUN_URL}`;
+            if (fs.existsSync('alert.md')) {
+              const lines = fs.readFileSync('alert.md', 'utf8').split('\n');
+              title = lines[0]; body = lines.slice(1).join('\n');
+            }
+            const {owner, repo} = context.repo, label = 'daily-failure';
+            try {
+              await github.rest.issues.createLabel({owner, repo, name: label, color: 'd73a4a',
+                description: 'Opened by the Daily update workflow when it fails'});
+            } catch (e) { /* already exists */ }
+            const open = await github.rest.issues.listForRepo({owner, repo, labels: label, state: 'open'});
+            if (open.data.length) {
+              await github.rest.issues.createComment({owner, repo, issue_number: open.data[0].number,
+                body: `**Failed again:** ${title}\n\n${body}`});
+            } else {
+              await github.rest.issues.create({owner, repo, title, body, labels: [label], assignees: [owner]});
+            }
+      - name: Close the failure issue (recovered)
+        if: success()
+        uses: actions/github-script@v7
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const open = await github.rest.issues.listForRepo({owner, repo, labels: 'daily-failure', state: 'open'});
+            for (const issue of open.data) {
+              await github.rest.issues.createComment({owner, repo, issue_number: issue.number,
+                body: `Recovered: this run succeeded. ${process.env.RUN_URL}`});
+              await github.rest.issues.update({owner, repo, issue_number: issue.number, state: 'closed'});
+            }

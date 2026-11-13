@@ -356,3 +356,26 @@ def test_model_match_new_player_and_keeper_columns():
     assert all(p[c] is not None for p in outfield for c in ("tackles", "dribbles", "big_chances_created"))
     assert sum(p["assists"] for p in players) > 0
     assert all(t["keeper_saves"] == 3 and t["big_chances_missed"] == 1 for t in rows["team_stats"])
+
+
+def test_silent_fotmob_changes_fail_the_run(loaded):
+    """FotMob keeps answering but drops a stat (F2), or stops updating results (F3): no
+    download error, so a check must fail - that stops the drafts and triggers the alert."""
+    wh, _, _ = loaded
+    today = NOW.date()
+    status = lambda: {r["check_id"]: r["status"] for r in checks.run_checks(wh, today, NOW, log=quiet)[0]}
+    assert status()["F2"] == "ok" and status()["F3"] == "ok"
+    recent = [m["match_id"] for m in wh.read("core.matches", None, {"season": 2026, "league": "Premier League"})
+              if m["date"] >= (today - timedelta(days=7)).isoformat()]
+    rows = wh.read("core.team_stats", None, {"match_id": recent})
+    wh.replace("core.team_stats", [dict(r, xg=None) for r in rows], {"match_id": recent})
+    assert status()["F2"] == "error"
+    wh.replace("core.team_stats", rows, {"match_id": recent})
+    # results stop: 11 played matches lose their result and become "postponed" fixtures
+    gone = wh.read("core.matches", None, {"season": 2026, "league": "Serie A"})[:11]
+    wh.replace("core.matches", [], {"match_id": [m["match_id"] for m in gone]})
+    wh.append("core.fixtures", [{k: m[k] for k in ("match_id", "league", "season", "season_label", "date",
+                                                   "kickoff_utc", "round", "home_team_id", "home_team",
+                                                   "away_team_id", "away_team")} | {"status": "postponed"}
+                                for m in gone])
+    assert status()["F3"] == "error"

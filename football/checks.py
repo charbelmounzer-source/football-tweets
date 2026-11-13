@@ -19,6 +19,9 @@ MAX_XG_MISSING = 0.02    # above this share of detailed matches without xG: warn
 # own pages are empty for about 1 match in 4 in 2010/11 (sample of 13 Nov 2026), full later.
 MIN_OLD_COVERAGE = 0.60
 SETTLE_DAYS = 2          # a match this recent may not have its details yet
+MIN_RECENT_MATCHES = 5   # F2 judges the last 7 days only with at least this many matches...
+MAX_RECENT_MISSING = 0.2 # ...and fails above this share of rows without xG / minutes
+MAX_STUCK = 10           # F3: more postponed matches than this at once is not the weather
 
 
 def coverage(wh, today, leagues=None):
@@ -88,7 +91,7 @@ def run_checks(wh, today, now, leagues=None, log=print):
     standings = read("core.standings")
     team_stats = read("core.team_stats", ["match_id", "league", "team_id", "team", "xg", "shot_goals"])
     players = read("core.player_matches", ["match_id", "league", "player_id", "player", "team_id",
-                                           "goals", "own_goals", "started"])
+                                           "goals", "own_goals", "started", "minutes", "date"])
     shots = read("core.shots", ["match_id", "league", "player_id", "team_id", "result", "own_goal", "xg"])
     raw = {r["league"]: r["fetched_at"] for r in wh.read("raw.league", ["league", "fetched_at"], scope)}
     unusable = {r["match_id"] for r in wh.read("raw.match", ["match_id", "problem"], scope) if r["problem"]}
@@ -107,6 +110,30 @@ def run_checks(wh, today, now, leagues=None, log=print):
     check("F1", "warn" if preseason else "error",
           "League not downloaded in the last 36 hours",
           [f"{lg} (last: {raw.get(lg, 'never')})" for lg in names if raw.get(lg, "") < limit])
+
+    # ---- FotMob changed something without failing: the run goes on, so these are errors
+    # (they stop the drafts and trigger the alert). Recent matches only: older ones were checked.
+    week = (today - timedelta(days=7)).isoformat()
+    recent_ids = {m["match_id"] for m in matches if (m["date"] or "") >= week}
+    recent_ts = [t for t in team_stats if t["match_id"] in recent_ids]
+    recent_pl = [p for p in players if p["match_id"] in recent_ids]
+    bad = []
+    if len({t["match_id"] for t in recent_ts}) >= MIN_RECENT_MATCHES:
+        for lg in names:
+            ts = [t for t in recent_ts if t["league"] == lg]
+            pl = [p for p in recent_pl if p["league"] == lg]
+            no_xg = sum(t["xg"] is None for t in ts)
+            no_min = sum(p["minutes"] is None for p in pl)
+            if ts and no_xg / len(ts) > MAX_RECENT_MISSING:
+                bad.append(f"{lg}: {no_xg}/{len(ts)} team rows without xG")
+            if pl and no_min / len(pl) > MAX_RECENT_MISSING:
+                bad.append(f"{lg}: {no_min}/{len(pl)} player rows without minutes")
+    check("F2", "error", "Recent matches (last 7 days) without stats FotMob always gives "
+          "(its format may have changed)", bad)
+    stuck = [f for f in fixtures if f["status"] == "postponed"]
+    check("F3", "error", f"More than {MAX_STUCK} matches past kick-off (2+ days) still without a "
+          f"result (FotMob may have stopped updating results)",
+          [f"{f['home_team']} v {f['away_team']} {f['date']}" for f in stuck] if len(stuck) > MAX_STUCK else [])
 
     by_id = Counter(m["match_id"] for m in matches + fixtures)
     check("M1", "error", "Match id present twice (or in both matches and fixtures)",
