@@ -10,9 +10,12 @@ Field paths were read on real answers on 11 November 2026 (Premier League 2026/2
 """
 
 import re
+import unicodedata
 from datetime import datetime, timedelta
 
+from . import config
 from .config import fotmob_season, season_label
+from .schemas import PLAYER_MATCHES as PLAYER_COLUMNS
 
 SCORE = re.compile(r"^\s*(\d+)\s*-\s*(\d+)\s*$")
 SHOT_FIELDS = ("id", "eventType", "teamId", "playerId", "playerName", "x", "y", "min", "minAdded",
@@ -173,19 +176,28 @@ def slim_match(payload):
             if s.get("key") and len(values) == 2 and values != [None, None]:
                 team_stats[s["key"]] = values
 
-    # cards only. Goals are not taken from the event list: it sometimes credits a scorer where
-    # the shot data (and the player's own "goals" stat) records an own goal.
+    events = ((c.get("matchFacts") or {}).get("events") or {}).get("events") or []
     cards = [{"player_id": e.get("playerId"), "player": e.get("nameStr"), "card": e.get("card"),
-              "minute": e.get("time")}
-             for e in ((c.get("matchFacts") or {}).get("events") or {}).get("events") or []
-             if e.get("type") == "Card"]
+              "minute": e.get("time"), "is_home": e.get("isHome")}
+             for e in events if e.get("type") == "Card"]
+    # Goal events are kept for matches without player stats (before 2016/17): there they are
+    # the only record of who scored. Where player stats or shots exist, those are used instead:
+    # the event list sometimes credits a scorer where the shot data records an own goal.
+    goals = [{"player_id": e.get("playerId"), "player": e.get("nameStr") or e.get("fullName"),
+              "is_home": e.get("isHome"), "own_goal": bool(e.get("ownGoal")), "minute": e.get("time")}
+             for e in events if e.get("type") == "Goal" and not e.get("isPenaltyShootoutEvent")]
+    # who came on: a substitution names both players (the one going off started anyway)
+    swaps = [[num(x.get("id"), int) for x in e.get("swap") or []]
+             for e in events if e.get("type") == "Substitution"]
 
     lineup = {}
     for side, key in (("home", "homeTeam"), ("away", "awayTeam")):
         t = (c.get("lineup") or {}).get(key) or {}
+        everyone = (t.get("starters") or []) + (t.get("subs") or [])
         lineup[side] = {"formation": t.get("formation"),
                         "starters": [p.get("id") for p in t.get("starters") or []],
-                        "subs": [p.get("id") for p in t.get("subs") or []]}
+                        "subs": [p.get("id") for p in t.get("subs") or []],
+                        "names": [[p.get("id"), p.get("name")] for p in everyone]}
 
     players = []
     for p in (c.get("playerStats") or {}).values():
@@ -206,8 +218,8 @@ def slim_match(payload):
             "home": dict(home, score=scores.get(home["id"])),
             "away": dict(away, score=scores.get(away["id"])),
             "finished": bool(status.get("finished")), "cancelled": bool(status.get("cancelled")),
-            "team_stats": team_stats, "cards": cards, "lineup": lineup, "players": players,
-            "shots": shots}
+            "team_stats": team_stats, "cards": cards, "goals": goals, "swaps": swaps,
+            "lineup": lineup, "players": players, "shots": shots}
 
 
 def validate_match(slim, match):
@@ -218,10 +230,19 @@ def validate_match(slim, match):
         return "teams differ from the league data"
     if not slim["finished"]:
         return "not finished according to the match answer"
-    teams_with_players = {p["team_id"] for p in slim["players"]}
-    if not {slim["home"]["id"], slim["away"]["id"]} <= teams_with_players:
+    if match["season"] >= config.PLAYER_STATS_FROM and not has_player_stats(slim):
         return "no player stats"
+    if not has_player_stats(slim) and not has_lineups(slim):
+        return "no lineup"                       # before 2016/17: a lineup is the least we use
     return None
+
+
+def has_player_stats(slim):
+    return {slim["home"]["id"], slim["away"]["id"]} <= {p["team_id"] for p in slim["players"]}
+
+
+def has_lineups(slim):
+    return all(len(slim["lineup"][side]["starters"]) == 11 for side in ("home", "away"))
 
 
 def stat(p, key, cast=float):
@@ -253,7 +274,11 @@ def keeper_stats(p, zero):
 
 
 def model_match(match, slim):
-    """match: the row of core.matches for this match (gives league, season, date, team names)."""
+    """match: the row of core.matches for this match (gives league, season, date, team names).
+    A match with player stats is modelled from them; an older one (before 2016/17) from its
+    lineups and events, with NULL for everything those do not give."""
+    if not has_player_stats(slim):
+        return model_lineups(match, slim)
     keys = {k: match[k] for k in ("match_id", "league", "season", "season_label", "date", "kickoff_utc")}
     home_id, away_id = match["home_team_id"], match["away_team_id"]
     names = {home_id: match["home_team"], away_id: match["away_team"]}
@@ -343,3 +368,97 @@ def model_match(match, slim):
             **keeper_stats(p, zero))
     return {"team_stats": team_stats, "player_matches": list(players.values()),
             "shots": list(shots.values())}
+
+
+# ------------------------------------------------------------------ older matches: lineups + events
+def plain(name):
+    """'Kylian Mbappé ' -> 'kylian mbappe': names in events and lineups are compared this way."""
+    s = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode()
+    return " ".join(s.lower().replace("-", " ").replace(".", " ").split())
+
+
+def name_finder(people):
+    """people: [(id, name)] -> function(name) -> id or None. Exact (accent-free) name first,
+    then a surname that is unique among these people."""
+    exact, last = {}, {}
+    for pid, name in people:
+        exact.setdefault(plain(name), set()).add(pid)
+        last.setdefault(plain(name).split(" ")[-1] if plain(name) else "", set()).add(pid)
+
+    def find(name):
+        n = plain(name)
+        if not n:
+            return None
+        ids = exact.get(n) or last.get(n.split(" ")[-1])
+        return next(iter(ids)) if ids and len(ids) == 1 else None
+    return find
+
+
+def event_goals(slim, home_id, away_id, hg, ag, find):
+    """{player_id: [goals, own_goals]} from the goal events, or None when they cannot be
+    trusted: a scorer not found in the lineups, or a total that is not the final score."""
+    found = {}
+    by_side = {True: 0, False: 0}
+    for e in slim.get("goals") or []:
+        side = e.get("is_home")
+        if side not in (True, False):
+            return None
+        pid = find[side](e.get("player")) if not e["own_goal"] else (
+            find[not side](e.get("player")) or find[side](e.get("player")))
+        if pid is None:
+            return None
+        by_side[side] += 1
+        f = found.setdefault(pid, [0, 0])
+        f[1 if e["own_goal"] else 0] += 1
+    return found if (by_side[True], by_side[False]) == (hg, ag) else None
+
+
+def model_lineups(match, slim):
+    keys = {k: match[k] for k in ("match_id", "league", "season", "season_label", "date", "kickoff_utc")}
+    home_id, away_id = match["home_team_id"], match["away_team_id"]
+    names = {home_id: match["home_team"], away_id: match["away_team"]}
+    side_id = {"home": home_id, "away": away_id}
+    team_stats = [dict(keys, team_id=tid, team=names[tid], home_away=side,
+                       **{c: None for c in ("xg", "xga", "npxg", "npxga", "xgot", "shots",
+                                            "shots_on_target", "shot_goals", "big_chances", "possession",
+                                            "corners", "touches_in_box", "big_chances_missed",
+                                            "xg_open_play", "xg_set_play", "keeper_saves")})
+                  for side, tid in side_id.items()]
+    came_on = {pid for swap in slim.get("swaps") or [] for pid in swap if pid is not None}
+    people, find, team_of, who = {}, {}, {}, {}
+    for side in ("home", "away"):
+        lu = slim["lineup"][side]
+        named = {num(pid, int): name for pid, name in lu.get("names") or []}
+        starters = {num(p, int) for p in lu["starters"]}
+        played = starters | ({num(p, int) for p in lu["subs"]} & came_on)
+        people[side] = [(pid, named.get(pid)) for pid in played]
+        find[side == "home"] = name_finder(people[side])
+        for pid, name in people[side]:
+            team_of[pid], who[pid] = side_id[side], (name, pid in starters)
+    goals = event_goals(slim, home_id, away_id, match["home_goals"], match["away_goals"], find)
+    # cards: each must be found in a lineup, or cards are unknown for the whole match
+    yellow, red, cards_ok = {}, {}, True
+    for e in slim.get("cards") or []:
+        side = e.get("is_home")
+        pid = find[side](e.get("player")) if side in (True, False) else None
+        if pid is None:
+            cards_ok = False
+            break
+        card = (e.get("card") or "").lower()
+        if "red" in card:
+            red[pid] = 1
+        elif card == "yellow":
+            yellow[pid] = yellow.get(pid, 0) + 1
+    players = []
+    for pid, tid in team_of.items():
+        name, started = who[pid]
+        g = (goals or {}).get(pid, [0, 0])
+        row = {c: None for c, _t in PLAYER_COLUMNS}
+        row.update(keys, player_id=pid, player=name, team_id=tid, team=names[tid],
+                   home_away="home" if tid == home_id else "away", started=int(started),
+                   goals=g[0] if goals is not None else None,
+                   own_goals=g[1] if goals is not None else None,
+                   yellow=yellow.get(pid, 0) if cards_ok else None,
+                   red=red.get(pid, 0) if cards_ok else None)
+        players.append(row)
+    return {"team_stats": team_stats, "player_matches": players, "shots": []}

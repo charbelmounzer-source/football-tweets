@@ -135,6 +135,11 @@ def rank_phrase(rank, tied, n, best_word, worst_word, noun):
     return f"the {prefix}{word} {noun}"
 
 
+def plus(a, b):
+    """a + b where None means unknown: anything plus unknown is unknown (never counted as 0)."""
+    return None if a is None or b is None else a + b
+
+
 def last_reached(entries, value, higher_better):
     """entries: [(value, season, who)]. The most recent entry that reached `value` (as high,
     or as low when lower is better), or None. "The most since <its season>" is then true:
@@ -355,9 +360,11 @@ class Data:
                                              "first_season": r["season"], "league": r["league"],
                                              "hole": False})
             c["hole"] |= self.hole(r["team_id"], r["season"])
-            c["goals"] += r["goals"] or 0
-            c["assists"] += r["assists"] or 0
-            c["pens"] += r["penalty_goals"] or 0
+            # older seasons have no assists (before 2016/17) or penalty data (before 2020/21),
+            # and goals only when the scorers' names matched the lineup: those stay unknown
+            c["goals"] = plus(c["goals"], r["goals"])
+            c["assists"] = plus(c["assists"], r["assists"])
+            c["pens"] = plus(c["pens"], r["penalty_goals"])
             c["games"] += 1
             if r["season"] < c["first_season"]:
                 c["first_season"], c["league"] = r["season"], r["league"]
@@ -690,12 +697,12 @@ def gen_overtake(d, lg):
             d.unreliable += 1                        # history not complete yet
             continue
         here = clubs[team]
-        if here["hole"] or here["first_season"] <= d.first_season.get(here["league"], 0):
+        if here["hole"] or here["goals"] is None or here["first_season"] <= d.first_season.get(here["league"], 0):
             continue    # a match of his club has no details, or he may have scored for them
                         # before our data starts: his tally there is not known
         before = here["goals"] - (p["goals"] or 0)
         for prev_team, c in clubs.items():
-            if prev_team == team or c["goals"] < 5 or c["hole"]:
+            if prev_team == team or c["hole"] or c["goals"] is None or c["goals"] < 5:
                 continue
             if c["first_season"] <= d.first_season.get(c["league"], 0):
                 continue                             # may have scored for them before our data starts
@@ -709,12 +716,15 @@ def gen_overtake(d, lg):
             goal_word = "goal" if (p["goals"] or 0) == 1 else "goals"
             text = (f"⚽️ {p['player']}'s {goal_word} against {opp} meant he {verb} his top-flight "
                     f"league tally for {prev_team} ({c['goals']}).")
-            if here["pens"] == 0 and c["pens"] > 0:
+            if here["pens"] == 0 and c["pens"]:                 # None (unknown) is never said
                 text += (f"\n\n{first_name(p['player'])} has yet to score a penalty for {team} in the "
                          f"league, while {c['pens']} of his {c['goals']} for {prev_team} came from the spot.")
-            ga = here["goals"] + here["assists"]
-            text += f"\n\n{ga} G/A in {here['games']} games for {team}"
-            text += f"… {pick(PUNCH['fire'], p['player'])}" if here["games"] and ga / here["games"] >= 0.5 else "."
+            ga = plus(here["goals"], here["assists"])
+            if ga is None:                                   # assists unknown before 2016/17
+                text += f"\n\n{here['goals']} goals in {here['games']} games for {team}."
+            else:
+                text += f"\n\n{ga} G/A in {here['games']} games for {team}"
+                text += f"… {pick(PUNCH['fire'], p['player'])}" if here["games"] and ga / here["games"] >= 0.5 else "."
             facts.append(Fact(
                 "overtake", lg, p["player"], text, rarity=7 + min(c["goals"], 40) / 10,
                 evidence={"goals_for_club": here["goals"], "before_match": before,
@@ -915,13 +925,17 @@ def gen_pace(d, lg):
     for p in d.all_player_matches():
         n = index.get((p["match_id"], p["team_id"])) if p["league"] == lg else None
         if n:
-            tallies[(p["season"], p["player_id"], p["team_id"])][n] = [p["goals"] or 0, p["assists"] or 0]
+            tallies[(p["season"], p["player_id"], p["team_id"])][n] = [p["goals"], p["assists"]]
             names[p["player_id"]] = p["player"]
 
     def at(key, n):
-        g = sum(v[0] for k, v in tallies[key].items() if k <= n)
-        a = sum(v[1] for k, v in tallies[key].items() if k <= n)
-        return {"goals": g, "assists": a, "involvements": g + a}
+        """Totals after the team's Nth match; None where one of his matches does not have it
+        (assists before 2016/17, goals of a match whose scorers could not be matched)."""
+        g = a = 0
+        for k, (goals, assists) in tallies[key].items():
+            if k <= n:
+                g, a = plus(g, goals), plus(a, assists)
+        return {"goals": g, "assists": a, "involvements": plus(g, a)}
     recent = d.recent_matches.get(lg, set())
     facts = []
     for p in d.pm:
@@ -936,7 +950,7 @@ def gen_pace(d, lg):
         best_fact = None
         for metric, (words, minimum) in PACE_METRICS.items():
             v = me[metric]
-            if v < minimum:
+            if v is None or v < minimum:
                 continue
             rivals = []
             for key in tallies:
@@ -944,11 +958,14 @@ def gen_pace(d, lg):
                     continue
                 season, pid, tid = key
                 other = at(key, n)[metric]
-                # a team-season with a match FotMob has no details for may hide one more
-                maybe = other + (1 if d.hole(tid, season) else 0)
-                rivals.append((maybe, season, (other, pid)))
+                # unknown (NULL), or a team-season with a match FotMob gave nothing for: this
+                # player may have got there - it counts as "maybe reached"
+                if other is None or d.hole(tid, season):
+                    rivals.append((float("inf"), season, (None, pid)))
+                else:
+                    rivals.append((other, season, (other, pid)))
             ref = last_reached(rivals, v, True)
-            if ref is None or ref[1] == d.season or ref[2][0] < v:
+            if ref is None or ref[1] == d.season or ref[2][0] is None or ref[2][0] < v:
                 continue    # nobody in our data got there (the last time is unknown), someone
                             # has it this season, or the latest one is only possible (a hole)
             (other, pid), ref_s = ref[2], ref[1]
@@ -958,7 +975,7 @@ def gen_pace(d, lg):
                 by = f"{names.get(pid, '?')}{' also' if other == v else ''} had {other}"
             text = (f"📈 {p['player']} has {v} {lg} {words} after {n} matches of the season - the "
                     f"most by any {lg} player at this stage since {by} in {season_label(ref_s)}.")
-            margin = max((r[0] for r in rivals if r[1] > ref_s), default=0)
+            margin = max((r[0] for r in rivals if r[1] > ref_s), default=0)   # all known, below v
             top = (other, ref_s, pid)
             f = Fact("pace", lg, p["player"], text, rarity=8 + min(d.season - ref_s, 4) / 2,
                      evidence={"metric": metric, "value": v, "team_matches": n,
