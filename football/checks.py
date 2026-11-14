@@ -41,13 +41,17 @@ def coverage(wh, today, leagues=None):
                                                      "away_team_id"])
                 if not names or f["league"] in names]
     raw = {r["match_id"]: r["problem"] for r in wh.read("raw.match", ["match_id", "problem"])}
-    xg = {r["match_id"] for r in wh.read("core.team_stats", ["match_id", "xg"]) if r["xg"] is not None}
+    team_stats = wh.read("core.team_stats", ["match_id", "xg"])
+    xg = {r["match_id"] for r in team_stats if r["xg"] is not None}
+    # new matches are appended (no delete first): a match written twice would show here
+    team_rows = Counter(r["match_id"] for r in team_stats)
     out = {}
 
     def row(m):
         return out.setdefault((m["league"], m["season"]), {
             "league": m["league"], "season": m["season"], "teams": set(), "listed": 0, "played": 0,
-            "cancelled": 0, "settled": 0, "details": 0, "settled_details": 0, "unusable": [], "pending": [], "no_xg": 0})
+            "cancelled": 0, "settled": 0, "details": 0, "settled_details": 0, "unusable": [], "pending": [], "no_xg": 0,
+            "duplicated": []})
     for f in fixtures:
         r = row(f)
         r["teams"] |= {f["home_team_id"], f["away_team_id"]}
@@ -59,6 +63,8 @@ def coverage(wh, today, leagues=None):
         r["listed"] += 1
         r["played"] += 1
         old = (m["date"] or "9") <= settled          # recent matches may still be on their way
+        if team_rows[m["match_id"]] > 2:
+            r["duplicated"].append(m["match_id"])
         r["settled"] += old
         if m["match_id"] not in raw:
             if old:
@@ -225,6 +231,9 @@ def run_checks(wh, today, now, leagues=None, log=print):
           f"less than {MIN_OLD_COVERAGE:.0%} of its matches with a lineup",
           [f"{label(r)}: {r['settled_details']}/{r['settled']}" for r in cov
            if r["finished"] and r["era"] == "lineups" and r["share_details"] < MIN_OLD_COVERAGE])
+    check("H6", "error", "Match whose details are stored twice (more than 2 team rows): totals "
+          "would count it double. Repair: python -m football rebuild --seasons <start year>",
+          [f"{label(r)}: match {mid}" for r in cov for mid in r["duplicated"]])
     total = sum(r["played"] for r in cov)
     gaps = sum(len(r["unusable"]) + len(r["pending"]) for r in cov)
     by_era = {}

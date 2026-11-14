@@ -170,6 +170,7 @@ Things to know about the data:
 | H3 | warn | a played match (2+ days old) whose details are not downloaded yet (expected while the history loads) |
 | H4 | warn | from 2020/21, a league-season with more than 2% of detailed matches without xG |
 | H5 | warn | before 2016/17, a finished season with less than 60% of its matches with a lineup |
+| H6 | error | a match whose details are stored twice (more than 2 team rows); repair with `rebuild` |
 | D1 | warn | a match played 2+ days ago without player details |
 | D2 | warn | score ≠ players' goals + own goals |
 | D3 | warn | a player's goals ≠ his goals in the shot data |

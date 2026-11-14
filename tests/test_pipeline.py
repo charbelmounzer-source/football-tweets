@@ -440,3 +440,19 @@ def test_a_batch_left_half_written_is_rewritten_not_duplicated(tmp_path):
     pipeline.update(w, client, now=NOW, log=quiet)
     assert sorted(c[1] for c in client.calls if c[0] == "match") == sorted(gone)
     no_duplicates(w)
+
+
+def test_a_match_stored_twice_is_an_error(loaded):
+    """New matches are appended, not deleted first: if one were ever written twice, every
+    total would count it double. H6 finds it; rebuild repairs it."""
+    wh, _, _ = loaded
+
+    def h6():
+        results, _ = checks.run_checks(wh, NOW.date(), NOW, log=quiet)
+        return {r["check_id"]: (r["status"], r["row_count"]) for r in results}["H6"]
+    assert h6() == ("ok", 0)
+    twice = wh.read("core.team_stats", None, {"match_id": FIRST_EPL})
+    wh.append("core.team_stats", twice)
+    assert h6() == ("error", 1)
+    pipeline.rebuild(wh, now=NOW, log=quiet)
+    assert h6() == ("ok", 0)

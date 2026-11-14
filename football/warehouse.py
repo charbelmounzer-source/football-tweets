@@ -50,6 +50,10 @@ class Warehouse:
     def read(self, table, columns=None, where=None):
         raise NotImplementedError
 
+    def usage(self):
+        """One line on what this session cost the backend, or None when nothing is billed."""
+        return None
+
 
 # ---------------------------------------------------------------------------- SQLite
 SQLITE_TYPES = {"INT64": "INTEGER", "FLOAT64": "REAL"}       # everything else is TEXT
@@ -164,6 +168,19 @@ class BigQueryWarehouse(Warehouse):
         self.location = location or config.LOCATION
         self.datasets = datasets or config.DATASETS
         self.client = bigquery.Client(project=self.project, location=self.location)
+        self.queries, self.bytes_billed = 0, 0               # of this session, for usage()
+
+    def _run(self, sql, params=None):
+        """Run a query and count what BigQuery bills for it (load jobs are free, not counted)."""
+        job = self.client.query(sql, job_config=self.bq.QueryJobConfig(query_parameters=params or []))
+        rows = job.result()
+        self.queries += 1
+        self.bytes_billed += getattr(job, "total_bytes_billed", None) or 0
+        return rows
+
+    def usage(self):
+        return (f"BigQuery: {self.queries} queries, {self.bytes_billed / 2**30:.2f} GiB billed "
+                f"(the project's daily quota is about 20 GiB; 1 TiB a month is free)")
 
     def _tid(self, table):
         ds, name = table.split(".")
@@ -212,7 +229,7 @@ class BigQueryWarehouse(Warehouse):
             except NotFound:
                 pass
             try:
-                self.client.query(f"CREATE OR REPLACE VIEW `{core}.{name}` AS {sql.format(core=core)}").result()
+                self._run(f"CREATE OR REPLACE VIEW `{core}.{name}` AS {sql.format(core=core)}")
             except Exception as e:                           # a view is a convenience, never block a run
                 print(f"  warning: view {name} not created ({e})")
 
@@ -252,7 +269,7 @@ class BigQueryWarehouse(Warehouse):
             statements.append(f"INSERT INTO `{tid}` ({cols}) SELECT {cols} FROM `{staging}`;")
         sql = "BEGIN TRANSACTION;\n" + "\n".join(statements) + "\nCOMMIT TRANSACTION;"
         try:
-            self.client.query(sql, job_config=self.bq.QueryJobConfig(query_parameters=params)).result()
+            self._run(sql, params)
         finally:
             if rows:
                 self.client.delete_table(staging, not_found_ok=True)
@@ -273,9 +290,8 @@ class BigQueryWarehouse(Warehouse):
     def read(self, table, columns=None, where=None):
         cols = ", ".join(f"`{c}`" for c in columns) if columns else "*"
         cond, params = self._cond(table, where)
-        job = self.client.query(f"SELECT {cols} FROM `{self._tid(table)}` WHERE {cond}",
-                                job_config=self.bq.QueryJobConfig(query_parameters=params))
-        return [{k: self._plain(v) for k, v in row.items()} for row in job.result()]
+        rows = self._run(f"SELECT {cols} FROM `{self._tid(table)}` WHERE {cond}", params)
+        return [{k: self._plain(v) for k, v in row.items()} for row in rows]
 
 
 def open_warehouse(backend, project=None, sqlite_path=None):

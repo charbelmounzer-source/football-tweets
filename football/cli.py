@@ -127,8 +127,12 @@ def main(argv=None):
 
     wh = open_warehouse(args.backend, args.project, args.db)
     wh.ensure()
-    result = {"daily": cmd_daily, "update": cmd_update, "check": cmd_check, "tweets": cmd_tweets,
-              "status": cmd_status, "rebuild": cmd_rebuild}[args.cmd](wh, args)
+    try:
+        result = {"daily": cmd_daily, "update": cmd_update, "check": cmd_check, "tweets": cmd_tweets,
+                  "status": cmd_status, "rebuild": cmd_rebuild}[args.cmd](wh, args)
+    finally:                                     # also after a failure: what the run cost so far
+        if wh.usage():
+            print(wh.usage())
     if args.cmd == "check" and result:
         sys.exit(1)
 
