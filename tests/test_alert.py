@@ -45,3 +45,9 @@ def test_the_daily_query_quota_is_named():
            "Custom quota exceeded: Your usage exceeded the custom quota for QueryUsagePerDay")
     title, body = alert.describe(log)
     assert "BigQuery daily query limit reached" in title and "08:00 UTC" in body
+
+
+def test_a_run_that_ran_out_of_time_is_named():
+    log = "1/3 update\n  match details: 0 new, 0 recent to check again, 5757 of past seasons still to load"
+    title, body = alert.describe(log)
+    assert "The run ran out of time" in title and "5000" in body

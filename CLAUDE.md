@@ -20,13 +20,14 @@ rewrites when several things change, and honest feedback over encouragement.
 | History 2020/21 → | **Complete** since 13 Nov: 35 league-seasons 2020/21-2026/27, ~11,800 matches, all with details but 2 that FotMob cannot give (Bologna-Udinese 2020/21, Mallorca-Girona 2023/24, "no player stats"). Every season has its full schedule (teams x (teams-1); Serie A 2022/23 has 381 with the play-off). xG on every detailed match but one (Ligue 1 2020/21). |
 | BigQuery project `football-model-494509` | Billing enabled, datasets `football_raw`, `football_core`, `football_tweets`. `replace()`, views and old-table replacement work on the real project. |
 | Service account | `football-pipeline@football-model-494509.iam.gserviceaccount.com`, roles BigQuery Data Editor + Job User. Key saved as repo secret `GCP_SA_KEY`. |
-| GitHub Actions `Daily update` | Daily 04:23 UTC, ~3 minutes once the history is loaded. Input **rebuild** re-makes core tables from raw (needed once after new columns). |
+| GitHub Actions `Daily update` | Cron 04:23 UTC, but GitHub starts it about 8 hours late (12:52 and 12:20 UTC on 12-13 Nov); ~3 minutes once the history is loaded. Input **rebuild** re-makes core tables from raw (needed once after new columns). |
 | Pull request 9 (merged 13 Nov) | Coverage checks, `rebuild`, 14 new player / 4 team columns, overtake fix, 4 new tweet patterns, "since" rule. Rebuild run on BigQuery 13 Nov: 11,233 matches, 0 errors. |
 | Pull request 11 (merged 13 Nov) | History back to 2010/11 with FotMob's eras; unknown = NULL. See "History back to 2010/11". The older seasons load over the next runs (see "Loading faster"). |
 | History 2010/11 – 2019/20 | Results and tables of all 50 league-seasons loaded 13 Nov. Match pages: **2016/17-2019/20 done** (7,191 of 7,203; 12 without player stats on FotMob); 2014/15-2015/16 done (all with lineups, 0 empty); **about 7,250 left** (2010/11-2013/14) on 14 Nov. See "Load log". |
 | Pull request 15 (merged 13 Nov) | Failure alerts: an issue assigned to the owner when `Daily update` fails, closed on recovery; checks F2/F3 for silent FotMob changes. See "Failure alerts". |
 | Pull request 17 (merged 13 Nov) | H2 asks 95% of matches with player stats in 2016/17-2019/20 (98% from 2020/21): Ligue 1 2019/20 has real gaps. |
 | Pull request 20 (merged 13 Nov) | New matches are appended, not deleted first: the load had used up the BigQuery daily query quota. See "Lessons" and "Load log". |
+| Safety pull request (14 Nov) | Every command prints what BigQuery billed ("BigQuery: N queries, X GiB billed"); check H6 (error) for a match stored twice; the update step stops at 160 minutes so a hung run still raises the alert ("The run ran out of time"). |
 
 ## Done on 13 Nov 2026
 
@@ -129,9 +130,8 @@ Say so plainly when it matters; do not assume these work.
   match's goals become NULL - safe, but read `status` / NULL goals per season once loaded.
 
 - **FotMob's tolerance** over months of daily runs. 5,000 requests in one run worked (13 Nov).
-- **How much BigQuery the pipeline uses per day** after the 13 Nov fix (PR 20), the real cost of
-  13 Nov, and what the project's daily query quota is set to (Google Cloud console: IAM &
-  Admin > Quotas, "Query usage per day"). See "Load log" for the estimate and how to measure.
+- **How much BigQuery a normal day uses** after the 13 Nov fix (PR 20): read the "BigQuery: ...
+  GiB billed" line at the end of the run logs (added 14 Nov). See "Load log" for what is known.
 - **Name matching of old goal scorers at full volume** (2010/11-2015/16): 94/94 on a sample.
   Once loaded, count matches with NULL goals per season (expect few).
 - **Postponed matches**: none seen. The status is derived from time (kick-off passed 48 h ago,
@@ -174,15 +174,16 @@ Say so plainly when it matters; do not assume these work.
 | 18:06 | 5,000 | OK: 4,995 pages; 2016/17-2019/20 complete |
 | 21:58 | 5,000 | **Failed: BigQuery daily query quota** (QueryUsagePerDay). Alert issue #19 opened (worked as designed; #19 since closed). Fixed by PR 20 |
 
-- The quota resets at midnight Pacific (08:00 UTC in winter). The 04:23 UTC scheduled run
-  falls before the reset: on a day the quota is used up, that run fails too.
-- **Cost estimate (not measured):** about 0.2-0.5 TiB of queries on 13 Nov, before the fix;
-  BigQuery's first 1 TiB per month is free, then about $6-7 per TiB on demand. Expected:
-  $0 to a few dollars for November. After PR 20: a normal day is a few hundred MB (free).
-  Storage (a few GB) is under the free 10 GiB; load jobs are free; GitHub Actions is free
-  (the repo is public). To measure: a read-only workflow reading
-  `region-eu.INFORMATION_SCHEMA.JOBS_BY_USER` (jobs of the service account), offered to the
-  owner on 14 Nov. Owner to check Billing > Reports and the quota's value.
+- The quota resets at midnight Pacific (08:00 UTC in winter). The scheduled run really starts
+  around 12:20-12:50 UTC (GitHub's delay), so after the reset.
+- **Measured by the owner on 14 Nov (console):** the project's "Query usage per day" quota is
+  **20.48 GiB** (a custom value; keep it: 20.48 GiB x 31 days is under the free 1 TiB a
+  month, so queries cannot cost anything). Billing > Reports for November up to 13 Nov:
+  0.03 TiB of queries, 0.03 GiB-month of storage, **total EUR 0.00**. So 13 Nov used the
+  whole 20 GiB: about 0.16 GiB per batch of 100 matches on the old code, far less than a
+  full scan of raw.match per DELETE: the clustering did limit what was billed.
+- With a 20 GiB day, a full `rebuild` is the heaviest thing: not on the same day as a big load.
+- Load jobs are free; storage is far under the free 10 GiB; GitHub Actions is free (public repo).
 
 ## Loading faster (learned 13 Nov)
 
@@ -190,7 +191,8 @@ Say so plainly when it matters; do not assume these work.
   queueing more cancels the waiting one. The owner queued 10 runs on 13 Nov; 8 were cancelled.
   Cancelled runs do not trigger the failure alert.
 - To load faster, start one run at a time with the input "Request cap for this run" at
-  **5000** (~2 hours at 1.5 s per request; the job's limit is 170 minutes). Not more.
+  **5000** (~2 hours at 1.5 s per request; the update step stops at 160 minutes, the job at
+  170). Not more.
 
 ## Failure alerts (built 13 Nov, owner's request)
 

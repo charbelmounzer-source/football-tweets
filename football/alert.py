@@ -53,10 +53,16 @@ UNKNOWN = ("Unexpected error",
            "The run stopped on an error that has no known cause. The log lines below are the "
            "best clue; the full log is behind the link.")
 
+TIMEOUT = ("The run ran out of time",
+           "The log stops in the middle of the download with no error: the run hit its time "
+           "limit (FotMob answering slowly, or a request cap that is too high: keep it at 5000 "
+           "or less). What was loaded is kept; the next run continues.")
+
 CHECK_HELP = {
     "F1": "a league was not downloaded in the last 36 hours",
     "F2": "recent match pages suddenly lack stats they always had: FotMob probably changed its format",
     "F3": "many matches past kick-off still have no result: FotMob may have stopped updating results",
+    "H6": "a match was written twice; run the workflow once with \"rebuild\" ticked to repair",
 }
 
 
@@ -77,6 +83,8 @@ def describe(log, run_url=None, when=None):
         if re.search(pattern, text):
             cause, meaning = c, m
             break
+    if cause == UNKNOWN[0] and re.search(r"match details:", text) and not re.search(r"Traceback|done:", text):
+        cause, meaning = TIMEOUT                 # stopped mid-download without any error line
     checks = re.findall(r"ERROR\s+([A-Z]\d)\s+(.*)", text)
     body = [f"**What happened:** {meaning}", ""]
     if checks:

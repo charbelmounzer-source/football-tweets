@@ -133,3 +133,11 @@ def test_read_returns_plain_strings_and_typed_parameters(bq):
     sql, params = rec.queries[0]
     assert sql == "SELECT `fact_id` FROM `proj.football_tweets.drafts` WHERE `run_date` >= @p0"
     assert params[0].args == ("p0", "DATE", date(2026, 11, 1))
+
+
+def test_usage_counts_the_queries_of_the_session(bq):
+    wh, rec = bq
+    assert wh.usage().startswith("BigQuery: 0 queries, 0.00 GiB billed")
+    wh.read("core.runs")
+    wh.replace("core.shots", [], {"season": 2026})
+    assert wh.usage().startswith("BigQuery: 2 queries")

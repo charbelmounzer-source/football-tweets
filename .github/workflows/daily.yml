@@ -50,6 +50,7 @@ jobs:
         shell: bash                    # = bash -eo pipefail: a failure is not hidden by tee
         run: python -m football rebuild 2>&1 | tee -a run.log
       - name: Update, check, draft
+        timeout-minutes: 160           # under the job's 170: a run that hangs fails here, so the alert below still runs
         shell: bash                    # = bash -eo pipefail: a failure is not hidden by tee
         run: |
           python -m football daily --md drafts.md \
