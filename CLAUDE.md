@@ -1,12 +1,12 @@
 # Context for the next session
 
-Read this first. It is the state of the project on 13 November 2026 and what to do next.
+Read this first. It is the state of the project on 14 November 2026 and what to do next.
 `README.md` has the user-facing documentation; this file has the history and the open items.
 
 ## What the project is
 
-FotMob data for the top 5 European leagues, from 2020/21 → BigQuery → automatically drafted
-tweets. End goal: post the tweets on X automatically. Today it only drafts them.
+FotMob data for the top 5 European leagues, from 2010/11 (full detail from 2020/21, see
+"History back to 2010/11") → BigQuery → automatically drafted tweets. End goal: post the tweets on X automatically. Today it only drafts them.
 
 Owner's wishes: FotMob as the only source, data fresh at least once a day, no CSV/local files,
 BigQuery as the home of the data, simple code. He prefers step-by-step changes, full file
@@ -17,13 +17,16 @@ rewrites when several things change, and honest feedback over encouragement.
 | Piece | State |
 |---|---|
 | Pipeline (`football/`) | FotMob only (pull request 8, 12 Nov). Runs every day on BigQuery since 12 Nov, no error. |
-| History | **Complete** since 13 Nov: 35 league-seasons 2020/21-2026/27, ~11,800 matches, all with details but 2 that FotMob cannot give (Bologna-Udinese 2020/21, Mallorca-Girona 2023/24, "no player stats"). Every season has its full schedule (teams x (teams-1); Serie A 2022/23 has 381 with the play-off). xG on every detailed match but one (Ligue 1 2020/21). |
+| History 2020/21 → | **Complete** since 13 Nov: 35 league-seasons 2020/21-2026/27, ~11,800 matches, all with details but 2 that FotMob cannot give (Bologna-Udinese 2020/21, Mallorca-Girona 2023/24, "no player stats"). Every season has its full schedule (teams x (teams-1); Serie A 2022/23 has 381 with the play-off). xG on every detailed match but one (Ligue 1 2020/21). |
 | BigQuery project `football-model-494509` | Billing enabled, datasets `football_raw`, `football_core`, `football_tweets`. `replace()`, views and old-table replacement work on the real project. |
 | Service account | `football-pipeline@football-model-494509.iam.gserviceaccount.com`, roles BigQuery Data Editor + Job User. Key saved as repo secret `GCP_SA_KEY`. |
 | GitHub Actions `Daily update` | Daily 04:23 UTC, ~3 minutes once the history is loaded. Input **rebuild** re-makes core tables from raw (needed once after new columns). |
 | Pull request 9 (merged 13 Nov) | Coverage checks, `rebuild`, 14 new player / 4 team columns, overtake fix, 4 new tweet patterns, "since" rule. Rebuild run on BigQuery 13 Nov: 11,233 matches, 0 errors. |
 | Pull request 11 (merged 13 Nov) | History back to 2010/11 with FotMob's eras; unknown = NULL. See "History back to 2010/11". The older seasons load over the next runs (see "Loading faster"). |
+| History 2010/11 – 2019/20 | Results and tables of all 50 league-seasons loaded 13 Nov. Match pages: **2016/17-2019/20 done** (7,191 of 7,203; 12 without player stats on FotMob); 2014/15-2015/16 done (all with lineups, 0 empty); **about 7,250 left** (2010/11-2013/14) on 14 Nov. See "Load log". |
 | Pull request 15 (merged 13 Nov) | Failure alerts: an issue assigned to the owner when `Daily update` fails, closed on recovery; checks F2/F3 for silent FotMob changes. See "Failure alerts". |
+| Pull request 17 (merged 13 Nov) | H2 asks 95% of matches with player stats in 2016/17-2019/20 (98% from 2020/21): Ligue 1 2019/20 has real gaps. |
+| Pull request 20 (merged 13 Nov) | New matches are appended, not deleted first: the load had used up the BigQuery daily query quota. See "Lessons" and "Load log". |
 
 ## Done on 13 Nov 2026
 
@@ -126,9 +129,11 @@ Say so plainly when it matters; do not assume these work.
   match's goals become NULL - safe, but read `status` / NULL goals per season once loaded.
 
 - **FotMob's tolerance** over months of daily runs. 5,000 requests in one run worked (13 Nov).
-- **How much BigQuery the pipeline uses per day** after the 13 Nov fix, and what the project's
-  daily query quota is set to (Google Cloud console: IAM & Admin > Quotas, "Query usage per
-  day"). Read once from INFORMATION_SCHEMA.JOBS when convenient.
+- **How much BigQuery the pipeline uses per day** after the 13 Nov fix (PR 20), the real cost of
+  13 Nov, and what the project's daily query quota is set to (Google Cloud console: IAM &
+  Admin > Quotas, "Query usage per day"). See "Load log" for the estimate and how to measure.
+- **Name matching of old goal scorers at full volume** (2010/11-2015/16): 94/94 on a sample.
+  Once loaded, count matches with NULL goals per season (expect few).
 - **Postponed matches**: none seen. The status is derived from time (kick-off passed 48 h ago,
   no result), not from a FotMob field.
 - **The cancelled Rayo Vallecano v Athletic Club** is listed with kick-off 2026-12-09 although
@@ -140,8 +145,10 @@ Say so plainly when it matters; do not assume these work.
 
 ## Next steps, in order
 
-1. **Let the history load** (~18,200 requests from 13 Nov: ~9 runs at the default 2,000, or
-   ~4 runs by hand with a cap of 5,000 - see "Loading faster"). Then read `status`: unusable per season (expect ~25% in 2010/11),
+1. **Finish the history load:** ~7,250 pages left on 14 Nov (2010/11-2013/14): 2 runs by
+   hand with a cap of 5,000 (after 08:00 UTC if the quota was used up), or ~4 scheduled days.
+   The first successful run on PR 20's code confirms the fix: watch that it does not hit the
+   quota. Then read `status`: unusable per season (expect ~25% in 2010/11),
    and the first drafts that use old seasons.
 2. **Tweet quality, with the owner's examples.** He will bring tweets he likes from X; turn
    each into a pattern or a wording rule. Read the drafts of a few days first.
@@ -156,6 +163,26 @@ Say so plainly when it matters; do not assume these work.
    `tweet_id`. Nothing posts yet. Needs an approval step first. The owner said not now.
 6. **Backup source, only if FotMob has a problem.** See "If FotMob breaks" below. Not to be
    built now (owner, 13 Nov): kept as the plan.
+
+## Load log (13-14 Nov)
+
+| Run (13 Nov, UTC) | Cap | Result |
+|---|---|---|
+| 15:54 | 2,000 | Results/tables 2010/11-2019/20 all in; 1,917 pages. **Failed on H2** (Ligue 1 2019/20 gaps), fixed by PR 17 |
+| 15:59 | 2,000 | Same H2 failure (started on the old code); 1,995 pages |
+| 17:42 | 2,000 | OK: 1,995 pages; 17 checks, 0 errors; 25 drafts |
+| 18:06 | 5,000 | OK: 4,995 pages; 2016/17-2019/20 complete |
+| 21:58 | 5,000 | **Failed: BigQuery daily query quota** (QueryUsagePerDay). Alert issue #19 opened (worked as designed; #19 since closed). Fixed by PR 20 |
+
+- The quota resets at midnight Pacific (08:00 UTC in winter). The 04:23 UTC scheduled run
+  falls before the reset: on a day the quota is used up, that run fails too.
+- **Cost estimate (not measured):** about 0.2-0.5 TiB of queries on 13 Nov, before the fix;
+  BigQuery's first 1 TiB per month is free, then about $6-7 per TiB on demand. Expected:
+  $0 to a few dollars for November. After PR 20: a normal day is a few hundred MB (free).
+  Storage (a few GB) is under the free 10 GiB; load jobs are free; GitHub Actions is free
+  (the repo is public). To measure: a read-only workflow reading
+  `region-eu.INFORMATION_SCHEMA.JOBS_BY_USER` (jobs of the service account), offered to the
+  owner on 14 Nov. Owner to check Billing > Reports and the quota's value.
 
 ## Loading faster (learned 13 Nov)
 
